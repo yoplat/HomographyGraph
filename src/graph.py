@@ -44,7 +44,7 @@ References
 """
 
 import numpy as np
-from typing import Dict, List, Tuple, Optional, Callable, Any
+from typing import Dict, List, Tuple, Optional, Callable
 from collections import deque
 
 # ---------------------------------------------------------------------------
@@ -75,19 +75,25 @@ class Graph:
         self.adj: Dict[int, set] = {}
 
         # Registry of averaging functions used by the iterative synchroniser.
-        self._averaging_map: Dict[str, Callable[[List[np.ndarray]], np.ndarray]] = {
+        self._averaging_map: Dict[
+            str, Callable[[List[np.ndarray]], np.ndarray]
+        ] = {
             "euclidean": self._averaging_euclidean,
             "direction": self._averaging_direction,
-            "sphere":    self._averaging_sphere,
+            "sphere": self._averaging_sphere,
         }
 
     # ======================================================================
     # Graph construction
     # ======================================================================
 
-    def add_vertex(self, uid: int, initial_proj: Optional[np.ndarray] = None) -> None:
+    def add_vertex(
+        self, uid: int, initial_proj: Optional[np.ndarray] = None
+    ) -> None:
         """Add a vertex with an optional initial absolute homography (default: I)."""
-        self.vertices[uid] = initial_proj if initial_proj is not None else np.eye(3)
+        self.vertices[uid] = (
+            initial_proj if initial_proj is not None else np.eye(3)
+        )
         if uid not in self.adj:
             self.adj[uid] = set()
 
@@ -198,20 +204,18 @@ class Graph:
             c = α · Σ_k  h̄_k / sqrt(1 − (c^T h̄_k)²)
         which we iterate until convergence.
         """
-        # Unit-norm representatives in R^9.
-        h_vecs = [h.flatten() / np.linalg.norm(h.flatten()) for h in estimates]
+        # (K, 9) matrix of unit-norm flattened homographies
+        H = np.stack([h.flatten() for h in estimates])
+        H /= np.linalg.norm(H, axis=1, keepdims=True)
 
-        # Initialise with the Euclidean mean.
-        c = np.mean(h_vecs, axis=0)
+        # Initialise with Euclidean mean
+        c = H.mean(axis=0)
         c /= np.linalg.norm(c)
 
-        for _ in range(10):  # Fixed-point iterations (converges fast).
-            weights = []
-            for h in h_vecs:
-                dot = np.clip(np.dot(c, h), -1.0, 1.0)
-                denom = np.sqrt(1 - dot ** 2)
-                weights.append(1.0 / max(denom, 1e-6))
-            c = np.average(h_vecs, axis=0, weights=weights)
+        for _ in range(10):
+            dots = np.clip(H @ c, -1.0, 1.0)  # (K,)
+            weights = 1.0 / np.maximum(np.sqrt(1 - dots**2), 1e-6)  # (K,)
+            c = weights @ H  # (9,)
             c /= np.linalg.norm(c)
 
         return c.reshape((3, 3))
@@ -272,7 +276,9 @@ class Graph:
                     continue
 
                 # Eq. (4) in [1]: X_{i|j} = Z_{ij} · X_j
-                estimates = [self.edges[(i, j)] @ self.vertices[j] for j in neighbours]
+                estimates = [
+                    self.edges[(i, j)] @ self.vertices[j] for j in neighbours
+                ]
 
                 # Compute the scale-aware average.
                 avg_xi = avg_func(estimates)
@@ -311,7 +317,9 @@ class Graph:
         elif method.lower() == "gsh":
             self._synchronize_gsh()
         else:
-            raise ValueError(f"Unknown spectral method '{method}'. Use 'lsh' or 'gsh'.")
+            raise ValueError(
+                f"Unknown spectral method '{method}'. Use 'lsh' or 'gsh'."
+            )
 
     def _synchronize_lsh(self) -> None:
         """
@@ -338,7 +346,7 @@ class Graph:
 
             # Diagonal block: self-homography H_{k,k} = I, scaled by 1/ζ_k.
             r = k_idx * 3
-            S[r:r+3, r:r+3] = np.eye(3) / zeta_k
+            S[r : r + 3, r : r + 3] = np.eye(3) / zeta_k
 
             # Off-diagonal blocks: for each neighbour i of k.
             for i in self.adj.get(k, set()):
@@ -347,7 +355,7 @@ class Graph:
                 # H_{i,k} in Schroeder's notation = edges[(k, i)] in our convention.
                 # (edges[(k,i)] = Z_{ki} = X_k · X_i^{-1}, which maps i→k.)
                 H_ik = self.edges[(k, i)]
-                S[r:r+3, c:c+3] = H_ik / zeta_k
+                S[r : r + 3, c : c + 3] = H_ik / zeta_k
 
         # Solve: minimise ||(S − I) · Û||  ⟹  Û = 3 right singular vectors
         # of (S − I) with smallest singular values.
@@ -359,7 +367,7 @@ class Graph:
 
         # Assign the 3×3 block for each vertex.
         for idx, uid in enumerate(uids):
-            raw = U_hat[idx*3:(idx+1)*3, :]
+            raw = U_hat[idx * 3 : (idx + 1) * 3, :]
             self.vertices[uid] = self._norm_matrix(raw)
 
     def _synchronize_gsh(self) -> None:
@@ -388,21 +396,21 @@ class Graph:
             r = k_idx * 3
 
             # Diagonal: (1 − ζ_k) · I
-            G[r:r+3, r:r+3] = (1 - zeta_k) * np.eye(3)
+            G[r : r + 3, r : r + 3] = (1 - zeta_k) * np.eye(3)
 
             # Off-diagonal: H_{i,k} for each known neighbour i ≠ k.
             for i in self.adj.get(k, set()):
                 i_idx = uid_to_idx[i]
                 c = i_idx * 3
                 H_ik = self.edges[(k, i)]
-                G[r:r+3, c:c+3] = H_ik
+                G[r : r + 3, c : c + 3] = H_ik
 
         # Null space via SVD.
         _, sigma, Vh = np.linalg.svd(G, full_matrices=True)
         U_hat = Vh[-3:, :].T
 
         for idx, uid in enumerate(uids):
-            raw = U_hat[idx*3:(idx+1)*3, :]
+            raw = U_hat[idx * 3 : (idx + 1) * 3, :]
             self.vertices[uid] = self._norm_matrix(raw)
 
     # ======================================================================
@@ -426,7 +434,9 @@ class Graph:
         """
         if root is None:
             # Pick the vertex with the most connections.
-            root = max(self.vertices.keys(), key=lambda u: len(self.adj.get(u, set())))
+            root = max(
+                self.vertices.keys(), key=lambda u: len(self.adj.get(u, set()))
+            )
 
         # X_root = I (the root defines the reference frame).
         self.vertices[root] = np.eye(3)
@@ -443,7 +453,9 @@ class Graph:
 
                 # X_child = Z_{child, parent} · X_parent
                 Z_cp = self.edges[(child, parent)]
-                self.vertices[child] = self._norm_matrix(Z_cp @ self.vertices[parent])
+                self.vertices[child] = self._norm_matrix(
+                    Z_cp @ self.vertices[parent]
+                )
 
     # ======================================================================
     # Deep copy (for running multiple methods on the same graph)

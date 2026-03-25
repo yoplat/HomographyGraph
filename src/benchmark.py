@@ -46,6 +46,7 @@ np.random.seed(SEED)
 # Ground-truth generation utilities
 # ===================================================================
 
+
 def generate_random_sl3() -> np.ndarray:
     """
     Generate a random 3×3 matrix in SL(3) (unit determinant).
@@ -100,6 +101,7 @@ def add_outlier_edge(graph: Graph, i: int, j: int) -> None:
 # ===================================================================
 # Error computation
 # ===================================================================
+
 
 def calculate_angular_error(
     graph: Graph, ground_truth: Dict[int, np.ndarray]
@@ -158,6 +160,7 @@ def calculate_angular_error(
 # Synthetic graph construction
 # ===================================================================
 
+
 def build_synthetic_graph(
     n: int,
     sigma: float = 0.05,
@@ -210,9 +213,7 @@ def build_synthetic_graph(
 
     # 3. Inject outlier edges.
     if outlier_density > 0:
-        edge_keys = [
-            (i, j) for (i, j) in graph.edges.keys() if i < j
-        ]
+        edge_keys = [(i, j) for (i, j) in graph.edges.keys() if i < j]
         n_outliers = int(len(edge_keys) * outlier_density)
         outlier_indices = np.random.choice(
             len(edge_keys), size=n_outliers, replace=False
@@ -233,12 +234,18 @@ def build_synthetic_graph(
 # where setup_function takes a Graph, runs synchronization, and returns nothing.
 
 METHODS = {
-    "Tree":      lambda g: g.synchronize_tree(),
-    "Sphere":    lambda g: g.synchronize_iterative(avg_method="sphere",    max_iters=100),
-    "Euclidean": lambda g: g.synchronize_iterative(avg_method="euclidean", max_iters=100),
-    "Direction": lambda g: g.synchronize_iterative(avg_method="direction", max_iters=100),
-    "LSH":       lambda g: g.synchronize_spectral(method="lsh"),
-    "GSH":       lambda g: g.synchronize_spectral(method="gsh"),
+    "Tree": lambda g: g.synchronize_tree(),
+    "Sphere": lambda g: g.synchronize_iterative(
+        avg_method="sphere", max_iters=100
+    ),
+    "Euclidean": lambda g: g.synchronize_iterative(
+        avg_method="euclidean", max_iters=100
+    ),
+    "Direction": lambda g: g.synchronize_iterative(
+        avg_method="direction", max_iters=100
+    ),
+    "LSH": lambda g: g.synchronize_spectral(method="lsh"),
+    "GSH": lambda g: g.synchronize_spectral(method="gsh"),
 }
 
 
@@ -261,7 +268,9 @@ def run_single_trial(
         Execution time (seconds) for each method label.
     """
     base_graph, ground_truth = build_synthetic_graph(
-        n=n, sigma=sigma, hole_density=hole_density,
+        n=n,
+        sigma=sigma,
+        hole_density=hole_density,
         outlier_density=outlier_density,
     )
 
@@ -288,6 +297,7 @@ def run_single_trial(
 # Experiment sweeps
 # ===================================================================
 
+
 def experiment_vary_nodes(
     node_counts: List[int],
     sigma: float = 0.05,
@@ -305,23 +315,32 @@ def experiment_vary_nodes(
     Returns error_results and time_results, each mapping method labels to
     lists of median values (one per node count).
     """
-    print("\n" + "="*60)
+    print("\n" + "=" * 60)
     print("EXPERIMENT 1: Varying number of nodes")
-    print(f"  σ={sigma}, ρ={hole_density}, γ={outlier_density}, "
-          f"trials={n_trials}")
-    print("="*60)
+    print(
+        f"  σ={sigma}, ρ={hole_density}, γ={outlier_density}, "
+        f"trials={n_trials}"
+    )
+    print("=" * 60)
 
     error_results = {label: [] for label in METHODS}
-    time_results  = {label: [] for label in METHODS}
+    time_results = {label: [] for label in METHODS}
 
     for n in node_counts:
         trial_errors = {label: [] for label in METHODS}
-        trial_times  = {label: [] for label in METHODS}
+        trial_times = {label: [] for label in METHODS}
 
         for t in range(n_trials):
+            start_time = time.time_ns()
             errs, tms = run_single_trial(
-                n=n, sigma=sigma, hole_density=hole_density,
-                outlier_density=outlier_density, methods=METHODS,
+                n=n,
+                sigma=sigma,
+                hole_density=hole_density,
+                outlier_density=outlier_density,
+                methods=METHODS,
+            )
+            print(
+                f"Single Trial time take: {(time.time_ns() - start_time) / 1_000_000_000}s"
             )
             for label in METHODS:
                 trial_errors[label].append(errs[label])
@@ -333,10 +352,13 @@ def experiment_vary_nodes(
             error_results[label].append(med_err)
             time_results[label].append(med_time)
 
-        print(f"  n={n:3d} | " + " | ".join(
-            f"{label}: {error_results[label][-1]:.2f}°"
-            for label in METHODS
-        ))
+        print(
+            f"  n={n:3d} | "
+            + " | ".join(
+                f"{label}: {error_results[label][-1]:.2f}°"
+                for label in METHODS
+            )
+        )
 
     return error_results, time_results
 
@@ -355,23 +377,25 @@ def experiment_vary_noise(
     but the iterative and spectral approaches should degrade more gracefully
     than the spanning tree.
     """
-    print("\n" + "="*60)
+    print("\n" + "=" * 60)
     print("EXPERIMENT 2: Varying noise level")
-    print(f"  n={n}, ρ={hole_density}, γ={outlier_density}, "
-          f"trials={n_trials}")
-    print("="*60)
+    print(f"  n={n}, ρ={hole_density}, γ={outlier_density}, trials={n_trials}")
+    print("=" * 60)
 
     error_results = {label: [] for label in METHODS}
-    time_results  = {label: [] for label in METHODS}
+    time_results = {label: [] for label in METHODS}
 
     for sigma in noise_levels:
         trial_errors = {label: [] for label in METHODS}
-        trial_times  = {label: [] for label in METHODS}
+        trial_times = {label: [] for label in METHODS}
 
         for t in range(n_trials):
             errs, tms = run_single_trial(
-                n=n, sigma=sigma, hole_density=hole_density,
-                outlier_density=outlier_density, methods=METHODS,
+                n=n,
+                sigma=sigma,
+                hole_density=hole_density,
+                outlier_density=outlier_density,
+                methods=METHODS,
             )
             for label in METHODS:
                 trial_errors[label].append(errs[label])
@@ -383,10 +407,13 @@ def experiment_vary_noise(
             error_results[label].append(med_err)
             time_results[label].append(med_time)
 
-        print(f"  σ={sigma:.3f} | " + " | ".join(
-            f"{label}: {error_results[label][-1]:.2f}°"
-            for label in METHODS
-        ))
+        print(
+            f"  σ={sigma:.3f} | "
+            + " | ".join(
+                f"{label}: {error_results[label][-1]:.2f}°"
+                for label in METHODS
+            )
+        )
 
     return error_results, time_results
 
@@ -406,23 +433,25 @@ def experiment_vary_holes(
     spanning-tree performance.  The spectral methods (LSH/GSH) handle
     missing data natively, which is one of their key advantages.
     """
-    print("\n" + "="*60)
+    print("\n" + "=" * 60)
     print("EXPERIMENT 3: Varying hole density")
-    print(f"  n={n}, σ={sigma}, γ={outlier_density}, "
-          f"trials={n_trials}")
-    print("="*60)
+    print(f"  n={n}, σ={sigma}, γ={outlier_density}, trials={n_trials}")
+    print("=" * 60)
 
     error_results = {label: [] for label in METHODS}
-    time_results  = {label: [] for label in METHODS}
+    time_results = {label: [] for label in METHODS}
 
     for rho in hole_densities:
         trial_errors = {label: [] for label in METHODS}
-        trial_times  = {label: [] for label in METHODS}
+        trial_times = {label: [] for label in METHODS}
 
         for t in range(n_trials):
             errs, tms = run_single_trial(
-                n=n, sigma=sigma, hole_density=rho,
-                outlier_density=outlier_density, methods=METHODS,
+                n=n,
+                sigma=sigma,
+                hole_density=rho,
+                outlier_density=outlier_density,
+                methods=METHODS,
             )
             for label in METHODS:
                 trial_errors[label].append(errs[label])
@@ -434,10 +463,13 @@ def experiment_vary_holes(
             error_results[label].append(med_err)
             time_results[label].append(med_time)
 
-        print(f"  ρ={rho:.2f} | " + " | ".join(
-            f"{label}: {error_results[label][-1]:.2f}°"
-            for label in METHODS
-        ))
+        print(
+            f"  ρ={rho:.2f} | "
+            + " | ".join(
+                f"{label}: {error_results[label][-1]:.2f}°"
+                for label in METHODS
+            )
+        )
 
     return error_results, time_results
 
@@ -448,12 +480,12 @@ def experiment_vary_holes(
 
 # Visual style for each method family.
 STYLE = {
-    "Tree":      {"color": "black",   "marker": "s", "linestyle": "--"},
-    "Sphere":    {"color": "red",     "marker": "o", "linestyle": "-"},
-    "Euclidean": {"color": "blue",    "marker": "^", "linestyle": "-"},
-    "Direction": {"color": "green",   "marker": "v", "linestyle": "-"},
-    "LSH":       {"color": "purple",  "marker": "D", "linestyle": "-."},
-    "GSH":       {"color": "orange",  "marker": "x", "linestyle": "-."},
+    "Tree": {"color": "black", "marker": "s", "linestyle": "--"},
+    "Sphere": {"color": "red", "marker": "o", "linestyle": "-"},
+    "Euclidean": {"color": "blue", "marker": "^", "linestyle": "-"},
+    "Direction": {"color": "green", "marker": "v", "linestyle": "-"},
+    "LSH": {"color": "purple", "marker": "D", "linestyle": "-."},
+    "GSH": {"color": "orange", "marker": "x", "linestyle": "-."},
 }
 
 
@@ -502,6 +534,7 @@ def plot_results(
 # Main
 # ===================================================================
 
+
 def main():
     """
     Run all three experiments and produce comparison plots.
@@ -517,8 +550,11 @@ def main():
         node_counts, sigma=0.05, hole_density=0.5, n_trials=20
     )
     plot_results(
-        node_counts, err1, time1,
-        xlabel="Number of Nodes", title="Varying graph size",
+        node_counts,
+        err1,
+        time1,
+        xlabel="Number of Nodes",
+        title="Varying graph size",
         save_path="exp1_vary_nodes.png",
     )
 
@@ -528,8 +564,11 @@ def main():
         noise_levels, n=25, hole_density=0.5, n_trials=20
     )
     plot_results(
-        noise_levels, err2, time2,
-        xlabel="Noise σ", title="Varying noise level",
+        noise_levels,
+        err2,
+        time2,
+        xlabel="Noise σ",
+        title="Varying noise level",
         save_path="exp2_vary_noise.png",
     )
 
@@ -539,15 +578,18 @@ def main():
         hole_densities, n=25, sigma=0.05, n_trials=20
     )
     plot_results(
-        hole_densities, err3, time3,
-        xlabel="Hole Density ρ", title="Varying hole density",
+        hole_densities,
+        err3,
+        time3,
+        xlabel="Hole Density ρ",
+        title="Varying hole density",
         save_path="exp3_vary_holes.png",
     )
 
     # ---- Summary ----
-    print("\n" + "="*60)
+    print("\n" + "=" * 60)
     print("SUMMARY OF FINDINGS")
-    print("="*60)
+    print("=" * 60)
     print("""
     Method comparison — Iterative [1] vs. Spectral [2]:
 
