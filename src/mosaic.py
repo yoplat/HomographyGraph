@@ -508,9 +508,14 @@ if __name__ == "__main__":
     args = parser.parse_args()
 
     # Build image paths.
+    # dataset = [
+    #     f"../{args.dataset}/San_Francisco_{i}.jpg"
+    #     for i in range(args.start, args.start + args.count)
+    # ]
+
     dataset = [
-        f"../{args.dataset}/San_Francisco_{i}.jpg"
-        for i in range(args.start, args.start + args.count)
+        f"compressed_images/IMG_{i}.jpg"
+        for i in range(4714, 4714 + 10)
     ]
 
     # 1. Build the homography graph from image features.
