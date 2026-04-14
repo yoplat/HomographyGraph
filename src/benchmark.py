@@ -1,9 +1,8 @@
 """
 benchmark.py — Synthetic comparison of synchronization methods for 3×3 homographies.
 
-This script generates random ground-truth projective transformations, creates
-noisy relative measurements on a graph with controlled connectivity, runs
-multiple synchronization algorithms, and compares their accuracy.
+This script runs multiple synchronization algorithms on synthetic graphs
+and compares their accuracy and execution time.
 
 The comparison covers two families of methods:
 
@@ -11,10 +10,12 @@ The comparison covers two families of methods:
   • **Spectral** [2]: Schroeder, Bartoli, Georgel & Navab (LSH / GSH)
   • **Spanning tree** baseline
 
-Three experimental axes are swept (mirroring the evaluation in [1]):
-  1. Number of nodes (graph size)          — Section "Experiment 1"
-  2. Noise level (measurement perturbation) — Section "Experiment 2"
-  3. Hole density (fraction of missing edges) — Section "Experiment 3"
+Four experimental axes are swept:
+  1. Number of nodes (graph size)           — ``experiment_vary_nodes``
+  2. Noise level (measurement perturbation) — ``experiment_vary_noise``
+  3. Hole density (fraction of missing edges) — ``experiment_vary_holes``
+  4. Graph topology (linear / circular / grid / multilane / random)
+     — ``experiment_vary_topology``
 
 Error metric
 ------------
@@ -31,15 +32,23 @@ References
     to Multiple-View Homography Estimation", IEEE WACV 2011.
 """
 
-from operator import gt
-
 import numpy as np
 import matplotlib.pyplot as plt
-import matplotlib.patches as mpatches
-import networkx as nx
 import time
-from typing import Dict, List, Tuple, Literal, Optional
-from graph import Graph
+from typing import Dict, List, Tuple
+
+from graph import (
+    Graph,
+    generate_random_sl3,
+    add_noise,
+    add_outlier_edge,
+    calculate_angular_error,
+    build_synthetic_graph,
+    build_linear_graph,
+    build_circular_graph,
+    build_grid_graph,
+    build_multilane_graph,
+)
 
 # Reproducibility.
 SEED = 42
@@ -47,711 +56,11 @@ np.random.seed(SEED)
 
 
 # ===================================================================
-# Ground-truth generation utilities
+# Registry of synchronization methods to benchmark
 # ===================================================================
 
-
-def generate_random_sl3() -> np.ndarray:
-    """
-    Generate a random 3×3 matrix in SL(3) (unit determinant).
-
-    We draw entries from a standard normal distribution, then normalise
-    by the cube root of the determinant.  This produces a realistic
-    spread of projective transformations for testing.
-    """
-    A = np.random.randn(3, 3)
-    det = np.linalg.det(A)
-    if det == 0:
-        return generate_random_sl3()  # retry on degenerate draw
-    return A / np.cbrt(det)
-
-
-def add_noise(matrix: np.ndarray, sigma: float = 0.01) -> np.ndarray:
-    """
-    Perturb a 3×3 matrix with additive Gaussian noise.
-
-    The noise is applied in the tangent space of the matrix manifold,
-    following the approach in Sec. 5.2 of [1]: flatten the matrix to
-    a 9-vector, add a noise vector of controlled angular magnitude,
-    then reshape.  For small sigma this is equivalent to a perturbation
-    on the sphere in R^9.
-
-    Parameters
-    ----------
-    matrix : np.ndarray
-        The noise-free 3×3 matrix.
-    sigma : float
-        Standard deviation of the additive Gaussian noise per entry.
-
-    Returns
-    -------
-    np.ndarray
-        The perturbed 3×3 matrix.
-    """
-    noise = np.random.normal(0, sigma, (3, 3))
-    return matrix + noise
-
-
-def add_outlier_edge(graph: Graph, i: int, j: int) -> None:
-    """
-    Replace the edge (i, j) with a completely random relative homography,
-    simulating a gross outlier (wrong match).
-    """
-    random_H = generate_random_sl3()
-    graph.edges[(i, j)] = random_H
-    graph.edges[(j, i)] = np.linalg.inv(random_H)
-
-
-# ===================================================================
-# Error computation
-# ===================================================================
-
-
-def calculate_angular_error(
-    graph: Graph, ground_truth: Dict[int, np.ndarray]
-) -> float:
-    """
-    Compute the mean angular error between estimated and true homographies.
-
-    Since the synchronization solution is defined up to a global
-    transformation C, we first align by solving:
-        C = X̂_0^{-1} · X_0
-    (using the first vertex as anchor), then measure:
-        e_i = arccos( |vec(X̂_i C) · vec(X_i)| )
-    for each vertex (Eq. 12 of [1]).
-
-    Parameters
-    ----------
-    graph : Graph
-        Synchronised graph.
-    ground_truth : dict
-        Mapping from vertex id to ground-truth 3×3 matrix.
-
-    Returns
-    -------
-    float
-        Mean angular error in degrees.
-    """
-    # Pick the first vertex as the alignment anchor.
-    anchor = min(ground_truth.keys())
-    est_X0 = graph.get_vertex_proj(anchor)
-    true_X0 = ground_truth[anchor]
-
-    # Alignment matrix: Ĉ such that X̂_i · C ≈ X_i.
-    C = np.linalg.inv(est_X0) @ true_X0
-
-    errors = []
-    for i in graph.vertices:
-        est_Xi_aligned = graph.get_vertex_proj(i) @ C
-        true_Xi = ground_truth[i]
-
-        # Flatten and normalise to unit vectors for angular comparison.
-        v1 = est_Xi_aligned.flatten()
-        v1 /= np.linalg.norm(v1)
-        v2 = true_Xi.flatten()
-        v2 /= np.linalg.norm(v2)
-
-        # Angular distance: arccos(|v1 · v2|).
-        # We take |·| because projective transformations are defined
-        # up to sign (antipodal equivalence on the sphere).
-        cos_theta = np.clip(np.abs(np.dot(v1, v2)), 0, 1)
-        errors.append(np.arccos(cos_theta))
-
-    return np.degrees(np.mean(errors))
-
-
-# ===================================================================
-# Synthetic graph construction
-# ===================================================================
-
-
-def build_synthetic_graph(
-    n: int,
-    sigma: float = 0.05,
-    hole_density: float = 0.3,
-    outlier_density: float = 0.0,
-) -> Tuple[Graph, Dict[int, np.ndarray]]:
-    """
-    Build a synthetic synchronization graph with controlled noise and
-    connectivity.
-
-    Parameters
-    ----------
-    n : int
-        Number of vertices (images).
-    sigma : float
-        Noise standard deviation for the relative measurements.
-    hole_density : float
-        Fraction of edges to remove (0 = complete graph, 0.95 = very sparse).
-        Connectivity is not guaranteed — the caller should check.
-    outlier_density : float
-        Fraction of remaining edges that are replaced by random outliers.
-
-    Returns
-    -------
-    graph : Graph
-        The constructed noisy graph (vertices initialised to I).
-    ground_truth : dict
-        The true absolute homographies.
-    """
-    graph = Graph()
-    ground_truth = {}
-
-    # 1. Generate random ground-truth homographies in SL(3).
-    for i in range(n):
-        gt_mat = generate_random_sl3()
-        ground_truth[i] = gt_mat
-        graph.add_vertex(i, np.eye(3))
-
-    # 2. Generate noisy relative measurements.
-    #    Z_ij = X_i · X_j^{-1} + noise
-    for i in range(n):
-        for j in range(i + 1, n):
-            # Skip edge with probability = hole_density.
-            if np.random.rand() < hole_density:
-                continue
-
-            rel_ij = ground_truth[i] @ np.linalg.inv(ground_truth[j])
-            noisy_rel = add_noise(rel_ij, sigma=sigma)
-            graph.add_edge(i, j, noisy_rel)
-
-    # 3. Inject outlier edges.
-    if outlier_density > 0:
-        edge_keys = [(i, j) for (i, j) in graph.edges.keys() if i < j]
-        n_outliers = int(len(edge_keys) * outlier_density)
-        outlier_indices = np.random.choice(
-            len(edge_keys), size=n_outliers, replace=False
-        )
-        for idx in outlier_indices:
-            i, j = edge_keys[idx]
-            add_outlier_edge(graph, i, j)
-
-    return graph, ground_truth
-
-import numpy as np
-from typing import Tuple, Dict
-
-
-# ─────────────────────────────────────────────────────────────────────────────
-# Linear (chain) graph: 0 ─ 1 ─ 2 ─ ... ─ (n-1)
-# ─────────────────────────────────────────────────────────────────────────────
-
-def build_linear_graph(
-    n: int,
-    sigma: float = 0.05,
-    hole_density: float = 0.0,
-    outlier_density: float = 0.0,
-    bandwidth: int = 1,
-) -> Tuple[Graph, Dict[int, np.ndarray]]:
-    """
-    Build a chain-structured synchronization graph.
-
-    The backbone  0 ─ 1 ─ 2 ─ … ─ (n-1)  is always fully present,
-    guaranteeing every node has at least one neighbour and the graph is
-    connected.  ``hole_density`` is applied **only** to shortcut edges
-    (k ≥ 2), so it controls redundancy without risking isolation.
-
-    Parameters
-    ----------
-    n : int
-        Number of vertices.
-    sigma : float
-        Noise standard deviation for relative measurements.
-    hole_density : float
-        Fraction of *shortcut* edges (k ≥ 2) to drop randomly.
-        Backbone edges (k = 1) are never dropped.
-    outlier_density : float
-        Fraction of remaining edges replaced by random outliers.
-    bandwidth : int
-        Maximum hop distance for which an edge is considered.
-        bandwidth=1  → pure chain (backbone only)
-        bandwidth=k  → backbone + shortcuts up to hop distance k
-
-    Returns
-    -------
-    graph        : Graph
-    ground_truth : dict  {node_id → absolute homography}
-    """
-    graph = Graph()
-    ground_truth: Dict[int, np.ndarray] = {}
-
-    # 1. Ground-truth homographies.
-    for i in range(n):
-        gt_mat = generate_random_sl3()
-        ground_truth[i] = gt_mat
-        graph.add_vertex(i, np.eye(3))
-
-    # 2. Band-diagonal edges.
-    #    k=1 → backbone: always included (no dropout).
-    #    k≥2 → shortcuts: subject to hole_density.
-    for k in range(1, bandwidth + 1):
-        is_backbone = (k == 1)
-        for i in range(n - k):
-            j = i + k
-            if not is_backbone and np.random.rand() < hole_density:
-                continue
-            rel_ij = ground_truth[i] @ np.linalg.inv(ground_truth[j])
-            graph.add_edge(i, j, add_noise(rel_ij, sigma=sigma))
-
-    # 3. Outlier injection.
-    if outlier_density > 0:
-        edge_keys = [(i, j) for (i, j) in graph.edges.keys() if i < j]
-        n_outliers = int(len(edge_keys) * outlier_density)
-        for idx in np.random.choice(len(edge_keys), size=n_outliers, replace=False):
-            i, j = edge_keys[idx]
-            add_outlier_edge(graph, i, j)
-
-    return graph, ground_truth
-
-
-
-# ─────────────────────────────────────────────────────────────────────────────
-# Circular (ring / cycle) graph: 0 ─ 1 ─ … ─ (n-1) ─ 0
-# ─────────────────────────────────────────────────────────────────────────────
-
-def build_circular_graph(
-    n: int,
-    sigma: float = 0.05,
-    hole_density: float = 0.0,
-    outlier_density: float = 0.0,
-    chord_step: int = 1,
-) -> Tuple[Graph, Dict[int, np.ndarray]]:
-    if n < 3:
-        raise ValueError("Circular graph requires n ≥ 3.")
-
-    graph = Graph()
-    ground_truth: Dict[int, np.ndarray] = {}
-
-    for i in range(n):
-        gt_mat = generate_random_sl3()
-        ground_truth[i] = gt_mat
-        graph.add_vertex(i, np.eye(3))
-
-    seen: set = set()
-    for k in range(1, chord_step + 1):
-        is_ring = (k == 1)          # ring edges are protected
-        for i in range(n):
-            j = (i + k) % n
-            key = (min(i, j), max(i, j))
-            if key in seen:
-                continue
-            seen.add(key)
-            if not is_ring and np.random.rand() < hole_density:
-                continue
-            a, b = key
-            rel_ab = ground_truth[a] @ np.linalg.inv(ground_truth[b])
-            graph.add_edge(a, b, add_noise(rel_ab, sigma=sigma))
-
-    if outlier_density > 0:
-        edge_keys = [(i, j) for (i, j) in graph.edges.keys() if i < j]
-        n_outliers = int(len(edge_keys) * outlier_density)
-        for idx in np.random.choice(len(edge_keys), size=n_outliers, replace=False):
-            i, j = edge_keys[idx]
-            add_outlier_edge(graph, i, j)
-
-    return graph, ground_truth
-
-
-
-# ─────────────────────────────────────────────────────────────────────────────
-# Grid (lattice) graph: nodes on an r × c grid, edges to 4-neighbours
-# ─────────────────────────────────────────────────────────────────────────────
-
-def build_grid_graph(
-    rows: int,
-    cols: int,
-    sigma: float = 0.05,
-    hole_density: float = 0.0,
-    outlier_density: float = 0.0,
-    diagonal_edges: bool = False,
-) -> Tuple[Graph, Dict[int, np.ndarray]]:
-    import networkx as nx
-
-    n = rows * cols
-    graph = Graph()
-    ground_truth: Dict[int, np.ndarray] = {}
-    node_id = lambda r, c: r * cols + c
-
-    for idx in range(n):
-        gt_mat = generate_random_sl3()
-        ground_truth[idx] = gt_mat
-        graph.add_vertex(idx, np.eye(3))
-
-    offsets = [(0, 1), (1, 0)]
-    if diagonal_edges:
-        offsets += [(1, 1), (1, -1)]
-
-    for r in range(rows):
-        for c in range(cols):
-            i = node_id(r, c)
-            for dr, dc in offsets:
-                nr, nc = r + dr, c + dc
-                if not (0 <= nr < rows and 0 <= nc < cols):
-                    continue
-                j = node_id(nr, nc)
-                if np.random.rand() < hole_density:
-                    continue
-                rel_ij = ground_truth[i] @ np.linalg.inv(ground_truth[j])
-                graph.add_edge(i, j, add_noise(rel_ij, sigma=sigma))
-
-    # ── Spanning-tree repair ─────────────────────────────────────────────────
-    # Build a NetworkX graph from current edges and check connectivity.
-    # For every missing tree edge, force-insert it so no node is isolated.
-    G_check = nx.Graph()
-    G_check.add_nodes_from(range(n))
-    G_check.add_edges_from(
-        (i, j) for (i, j) in graph.edges.keys() if i < j
-    )
-    if not nx.is_connected(G_check):
-        for i, j in nx.minimum_spanning_edges(
-            nx.complement(G_check), data=False   # edges NOT yet in graph
-        ):
-            # Only add enough edges to connect the components.
-            if not nx.is_connected(G_check):
-                rel_ij = ground_truth[i] @ np.linalg.inv(ground_truth[j])
-                graph.add_edge(i, j, add_noise(rel_ij, sigma=sigma))
-                G_check.add_edge(i, j)
-
-    if outlier_density > 0:
-        edge_keys = [(i, j) for (i, j) in graph.edges.keys() if i < j]
-        n_outliers = int(len(edge_keys) * outlier_density)
-        for idx in np.random.choice(len(edge_keys), size=n_outliers, replace=False):
-            i, j = edge_keys[idx]
-            add_outlier_edge(graph, i, j)
-
-    return graph, ground_truth
-
-def build_multilane_graph(
-    n: int,
-    num_lanes: int = 3,
-    sigma: float = 0.05,
-    hole_density: float = 0.0,
-    outlier_density: float = 0.0,
-    bandwidth: int = 1,
-    cross_connect: bool = True,
-    diagonal_cross_density: float = 0.0,
-) -> Tuple[Graph, Dict[int, np.ndarray]]:
-    """
-    Build a multi-lane linear synchronization graph.
-
-    Parameters
-    ----------
-    n : int
-        Total number of nodes.  The nodes are distributed across lanes as
-        evenly as possible:
-            n_per_lane = ceil(n / num_lanes)
-        If n is not divisible by num_lanes, the last lane gets fewer nodes
-        (n - (num_lanes-1) * n_per_lane).
-    num_lanes : int
-        Number of parallel lanes.  Defaults to 3.
-        Must satisfy num_lanes ≤ n.
-    ...  (all other parameters unchanged)
-    """
-    if num_lanes > n:
-        raise ValueError(f"num_lanes ({num_lanes}) cannot exceed n ({n}).")
-
-    n_per_lane = int(np.ceil(n / num_lanes))
-
-    # Actual lane sizes (last lane may be shorter).
-    lane_sizes = [n_per_lane] * (num_lanes - 1)
-    lane_sizes.append(n - n_per_lane * (num_lanes - 1))   # remainder
-
-    graph = Graph()
-    ground_truth: Dict[int, np.ndarray] = {}
-
-    # Node id: running counter across lanes.
-    # lane_offsets[lane] = index of first node in that lane.
-    lane_offsets = [sum(lane_sizes[:l]) for l in range(num_lanes)]
-    node_id = lambda lane, col: lane_offsets[lane] + col
-
-    # 1. Ground-truth homographies.
-    for idx in range(n):
-        gt_mat = generate_random_sl3()
-        ground_truth[idx] = gt_mat
-        graph.add_vertex(idx, np.eye(3))
-
-    existing = set()
-
-    def _try_add(i: int, j: int) -> None:
-        key = (min(i, j), max(i, j))
-        if key in existing:
-            return
-        existing.add(key)
-        a, b = key
-        rel = ground_truth[a] @ np.linalg.inv(ground_truth[b])
-        graph.add_edge(a, b, add_noise(rel, sigma=sigma))
-
-    # 2. Within-lane edges (backbone protected).
-    for lane in range(num_lanes):
-        size = lane_sizes[lane]
-        for k in range(1, bandwidth + 1):
-            is_backbone = (k == 1)
-            for col in range(size - k):
-                if not is_backbone and np.random.rand() < hole_density:
-                    continue
-                _try_add(node_id(lane, col), node_id(lane, col + k))
-
-    # 3. Vertical cross edges (never dropped).
-    if cross_connect:
-        for lane in range(num_lanes - 1):
-            shared_cols = min(lane_sizes[lane], lane_sizes[lane + 1])
-            for col in range(shared_cols):
-                _try_add(node_id(lane, col), node_id(lane + 1, col))
-
-    # 4. Diagonal cross edges.
-    if diagonal_cross_density > 0.0:
-        for lane in range(num_lanes - 1):
-            for col in range(lane_sizes[lane]):
-                for d in range(1, bandwidth + 1):
-                    for target_col in [col - d, col + d]:
-                        if not (0 <= target_col < lane_sizes[lane + 1]):
-                            continue
-                        if np.random.rand() < diagonal_cross_density:
-                            _try_add(
-                                node_id(lane,     col),
-                                node_id(lane + 1, target_col),
-                            )
-
-    # 5. Outlier injection.
-    if outlier_density > 0:
-        edge_keys = [(i, j) for (i, j) in graph.edges.keys() if i < j]
-        n_outliers = int(len(edge_keys) * outlier_density)
-        for idx in np.random.choice(len(edge_keys), size=n_outliers, replace=False):
-            i, j = edge_keys[idx]
-            add_outlier_edge(graph, i, j)
-
-    return graph, ground_truth, (num_lanes, n_per_lane)
-
-
-
-
-
-
-LayoutHint = Literal["auto", "spring", "linear", "circular", "grid"]
-
-def visualize_graph(
-    graph: Graph,
-    ground_truth: Optional[Dict[int, np.ndarray]] = None,
-    layout: LayoutHint = "auto",
-    grid_shape: Optional[tuple[int, int]] = None,
-    outlier_edges: Optional[set[tuple[int, int]]] = None,
-    title: str = "Synchronization Graph",
-    figsize: tuple[int, int] = (9, 7),
-    ax: Optional[plt.Axes] = None,
-) -> plt.Axes:
-    """
-    Visualise a synchronisation Graph.
-
-    Draws nodes and edges with layout heuristics that match the underlying
-    graph topology.  Optionally highlights outlier edges and annotates
-    nodes with their ground-truth index.
-
-    Parameters
-    ----------
-    graph : Graph
-        The graph to draw.
-    ground_truth : dict, optional
-        {node_id → absolute homography}.  When supplied the node colour
-        encodes whether the vertex has been initialised (white) or not.
-        Currently used only for the legend; extend to show residuals if needed.
-    layout : {"auto", "spring", "linear", "circular", "grid"}
-        Spatial layout algorithm.
-
-        * ``"auto"``     – heuristically chosen from the graph's edge
-          structure: ring-like → circular, path-like → linear,
-          grid-like → grid, otherwise → spring.
-        * ``"spring"``   – Fruchterman–Reingold force-directed layout
-          (best for random graphs).
-        * ``"linear"``   – nodes arranged on a horizontal line in index
-          order (best for chain / band-diagonal graphs).
-        * ``"circular"`` – nodes equally spaced on a circle (best for
-          ring graphs).
-        * ``"grid"``     – nodes placed on a 2-D grid.  ``grid_shape``
-          must be provided or is inferred as (√n × √n).
-
-    grid_shape : (rows, cols), optional
-        Required when ``layout="grid"``.  Ignored for other layouts.
-    outlier_edges : set of (i, j) pairs, optional
-        Edges to highlight in red.  If not provided the function draws
-        all edges in a single neutral colour.
-    title : str
-        Figure / axes title.
-    figsize : (width, height)
-        Passed to ``plt.subplots`` when no ``ax`` is supplied.
-    ax : matplotlib.axes.Axes, optional
-        Draw onto an existing axes instead of creating a new figure.
-
-    Returns
-    -------
-    ax : matplotlib.axes.Axes
-        The axes containing the drawing.
-    """
-    # ── 1. Build a NetworkX graph from the custom Graph object ──────────────
-    G = nx.Graph()
-    G.add_nodes_from(graph.vertices.keys())
-    for (i, j) in graph.edges.keys():
-        if i < j:
-            G.add_edge(i, j)
-
-    n = G.number_of_nodes()
-    nodes = sorted(G.nodes())
-
-    # ── 2. Layout auto-detection ─────────────────────────────────────────────
-    def _is_path_like(G: nx.Graph) -> bool:
-        """True when the graph looks like a (possibly sparse) chain."""
-        degrees = [d for _, d in G.degree()]
-        return max(degrees) <= 3 and nx.is_connected(G) and not nx.is_biconnected(G)
-
-    def _is_ring_like(G: nx.Graph) -> bool:
-        """True when every node has degree 2 or when the graph is a single cycle."""
-        degrees = [d for _, d in G.degree()]
-        avg_deg = np.mean(degrees)
-        return 1.8 <= avg_deg <= 2.4
-
-    def _is_grid_like(G: nx.Graph, n: int) -> bool:
-        """True when n is a perfect square and avg degree ≈ 3-4."""
-        sq = int(np.round(np.sqrt(n)))
-        if sq * sq != n:
-            return False
-        degrees = [d for _, d in G.degree()]
-        return 2.5 <= np.mean(degrees) <= 4.5
-
-    if layout == "auto":
-        if _is_ring_like(G):
-            layout = "circular"
-        elif _is_path_like(G):
-            layout = "linear"
-        elif _is_grid_like(G, n):
-            layout = "grid"
-        else:
-            layout = "spring"
-
-    # ── 3. Compute positions ─────────────────────────────────────────────────
-    pos: Dict[int, np.ndarray] = {}
-
-    if layout == "spring":
-        pos = nx.spring_layout(G, seed=42, k=2.0 / np.sqrt(n))
-
-    elif layout == "linear":
-        for rank, node in enumerate(nodes):
-            pos[node] = np.array([rank / max(n - 1, 1), 0.0])
-
-    elif layout == "circular":
-        angles = np.linspace(0, 2 * np.pi, n, endpoint=False)
-        for node, angle in zip(nodes, angles):
-            pos[node] = np.array([np.cos(angle), np.sin(angle)])
-
-    elif layout == "grid":
-        if grid_shape is None:
-            cols = int(np.ceil(np.sqrt(n)))
-            rows = int(np.ceil(n / cols))
-        else:
-            rows, cols = grid_shape
-        for node in nodes:
-            r, c = divmod(node, cols)
-            pos[node] = np.array([c / max(cols - 1, 1), -r / max(rows - 1, 1)])
-
-    # ── 4. Partition edges ───────────────────────────────────────────────────
-    outlier_set: set[tuple[int, int]] = set()
-    if outlier_edges is not None:
-        outlier_set = {(min(i, j), max(i, j)) for i, j in outlier_edges}
-
-    inlier_edgelist  = []
-    outlier_edgelist = []
-    for (i, j) in G.edges():
-        key = (min(i, j), max(i, j))
-        if key in outlier_set:
-            outlier_edgelist.append((i, j))
-        else:
-            inlier_edgelist.append((i, j))
-
-    # ── 5. Draw ──────────────────────────────────────────────────────────────
-    if ax is None:
-        fig, ax = plt.subplots(figsize=figsize)
-        fig.patch.set_facecolor("#f7f6f2")
-
-    ax.set_facecolor("#f7f6f2")
-
-    # Inlier edges
-    nx.draw_networkx_edges(
-        G, pos, edgelist=inlier_edgelist, ax=ax,
-        edge_color="#01696f", alpha=0.65, width=1.6,
-    )
-    # Outlier edges
-    if outlier_edgelist:
-        nx.draw_networkx_edges(
-            G, pos, edgelist=outlier_edgelist, ax=ax,
-            edge_color="#a12c7b", alpha=0.85, width=2.2,
-            style="dashed",
-        )
-
-    # Node fill: white if initialised (all vertices start at I), teal if solved
-    node_colors = ["#cedcd8" if np.allclose(graph.vertices[v], np.eye(3)) else "#01696f"
-                   for v in nodes]
-    nx.draw_networkx_nodes(
-        G, pos, nodelist=nodes, ax=ax,
-        node_color=node_colors, edgecolors="#01696f",
-        node_size=max(80, min(500, 4000 // n)), linewidths=1.8,
-    )
-
-    # Labels — hide when the graph is large
-    if n <= 40:
-        nx.draw_networkx_labels(
-            G, pos, ax=ax,
-            font_size=max(6, min(10, 120 // n)),
-            font_color="#28251d", font_weight="bold",
-        )
-
-    # ── 6. Stats annotation ──────────────────────────────────────────────────
-    n_edges   = G.number_of_edges()
-    n_out     = len(outlier_edgelist)
-    connected = nx.is_connected(G) if n_edges > 0 else False
-    density   = nx.density(G)
-
-    stats = (
-        f"n={n}  |  edges={n_edges}  |  density={density:.2f}\n"
-        f"connected={'yes' if connected else 'NO ⚠'}  |  "
-        f"outliers={n_out} ({100*n_out/max(n_edges,1):.0f}%)"
-    )
-    ax.text(
-        0.02, 0.02, stats,
-        transform=ax.transAxes,
-        fontsize=8, color="#7a7974",
-        verticalalignment="bottom",
-        fontfamily="monospace",
-        bbox=dict(boxstyle="round,pad=0.3", facecolor="#f9f8f5", edgecolor="#dcd9d5"),
-    )
-
-    # ── 7. Legend ────────────────────────────────────────────────────────────
-    legend_items = [
-        mpatches.Patch(facecolor="#cedcd8", edgecolor="#01696f", label="vertex  (I init)"),
-        mpatches.Patch(facecolor="#01696f", edgecolor="#01696f", label="vertex  (solved)"),
-        mpatches.Patch(facecolor="#01696f", alpha=0.65,          label="inlier edge"),
-    ]
-    if outlier_edgelist:
-        legend_items.append(
-            mpatches.Patch(facecolor="#a12c7b", alpha=0.85, label="outlier edge")
-        )
-    ax.legend(
-        handles=legend_items, loc="upper right",
-        fontsize=8, framealpha=0.9,
-        facecolor="#f9f8f5", edgecolor="#dcd9d5",
-    )
-
-    ax.set_title(title, fontsize=12, fontweight="bold",
-                 color="#28251d", pad=12)
-    ax.axis("off")
-    plt.tight_layout()
-    return ax
-
-# ===================================================================
-# Single experiment runner
-# ===================================================================
-
-# Registry of all methods to benchmark.  Each entry is:
-#   (label, setup_function)
-# where setup_function takes a Graph, runs synchronization, and returns nothing.
-
+# Each entry is (label → callable).  The callable takes a Graph, runs
+# synchronization in-place, and returns nothing.
 METHODS = {
     "Tree": lambda g: g.synchronize_tree(),
     "Sphere": lambda g: g.synchronize_iterative(
@@ -768,16 +77,38 @@ METHODS = {
 }
 
 
+# ===================================================================
+# Single-trial runner
+# ===================================================================
+
+
 def run_single_trial(
     n: int,
     sigma: float,
     hole_density: float,
     outlier_density: float,
     methods: Dict[str, callable],
+    topology: str = "multilane",
 ) -> Tuple[Dict[str, float], Dict[str, float]]:
     """
     Run one trial: build a synthetic graph, run all methods, return errors
     and execution times.
+
+    Parameters
+    ----------
+    n : int
+        Number of nodes.
+    sigma : float
+        Noise standard deviation.
+    hole_density : float
+        Fraction of removable edges to drop.
+    outlier_density : float
+        Fraction of remaining edges replaced by outliers.
+    methods : dict
+        {label → sync callable}.
+    topology : str
+        Which graph builder to use.  One of ``"random"``, ``"linear"``,
+        ``"circular"``, ``"grid"``, ``"multilane"`` (default).
 
     Returns
     -------
@@ -786,25 +117,41 @@ def run_single_trial(
     times : dict[str, float]
         Execution time (seconds) for each method label.
     """
+    # ── Build graph according to requested topology ──────────────────────
+    if topology == "random":
+        base_graph, ground_truth = build_synthetic_graph(
+            n=n, sigma=sigma, hole_density=hole_density,
+            outlier_density=outlier_density,
+        )
+    elif topology == "linear":
+        base_graph, ground_truth = build_linear_graph(
+            n=n, sigma=sigma, hole_density=hole_density,
+            outlier_density=outlier_density, bandwidth=3,
+        )
+    elif topology == "circular":
+        base_graph, ground_truth = build_circular_graph(
+            n=n, sigma=sigma, hole_density=hole_density,
+            outlier_density=outlier_density, chord_step=3,
+        )
+    elif topology == "grid":
+        # Choose the most square-like layout for n nodes.
+        cols = int(np.ceil(np.sqrt(n)))
+        rows = int(np.ceil(n / cols))
+        base_graph, ground_truth = build_grid_graph(
+            rows=rows, cols=cols, sigma=sigma,
+            hole_density=hole_density, outlier_density=outlier_density,
+            diagonal_edges=True,
+        )
+    elif topology == "multilane":
+        base_graph, ground_truth, _ = build_multilane_graph(
+            n=n, num_lanes=3, sigma=sigma,
+            hole_density=hole_density, outlier_density=outlier_density,
+            bandwidth=3, cross_connect=True, diagonal_cross_density=0.15,
+        )
+    else:
+        raise ValueError(f"Unknown topology '{topology}'.")
 
-    num_lanes  = 3
-    base_graph, ground_truth, grid_shape = build_multilane_graph(
-        n=100,
-        num_lanes=num_lanes,
-        sigma=sigma,
-        hole_density=hole_density,   
-        outlier_density=0.05,
-        bandwidth=3,
-        cross_connect=True,
-        diagonal_cross_density=0.15
-    )
-    # visualize_graph(
-    #     base_graph, ground_truth,
-    #     layout="grid",
-    #     grid_shape=grid_shape,   # rows=lanes, cols=nodes per lane
-    #     title=f"Multi-lane graph  (n={n}, {grid_shape[0]} lanes × {grid_shape[1]} cols)",    )    
-    # plt.show()
-
+    # ── Run every method on an independent copy ──────────────────────────
     errors = {}
     times = {}
 
@@ -825,7 +172,7 @@ def run_single_trial(
 
 
 # ===================================================================
-# Experiment sweeps
+# Experiment sweeps (original three axes)
 # ===================================================================
 
 
@@ -835,6 +182,7 @@ def experiment_vary_nodes(
     hole_density: float = 0.5,
     outlier_density: float = 0.0,
     n_trials: int = 20,
+    topology: str = "multilane",
 ) -> Tuple[Dict[str, List[float]], Dict[str, List[float]]]:
     """
     Experiment 1: vary the number of nodes, keeping noise and hole density fixed.
@@ -849,8 +197,8 @@ def experiment_vary_nodes(
     print("\n" + "=" * 60)
     print("EXPERIMENT 1: Varying number of nodes")
     print(
-        f"  σ={sigma}, ρ={hole_density}, γ={outlier_density}, "
-        f"trials={n_trials}"
+        f"  topology={topology}, σ={sigma}, ρ={hole_density}, "
+        f"γ={outlier_density}, trials={n_trials}"
     )
     print("=" * 60)
 
@@ -862,16 +210,10 @@ def experiment_vary_nodes(
         trial_times = {label: [] for label in METHODS}
 
         for t in range(n_trials):
-            start_time = time.time_ns()
             errs, tms = run_single_trial(
-                n=n,
-                sigma=sigma,
-                hole_density=hole_density,
-                outlier_density=outlier_density,
-                methods=METHODS,
-            )
-            print(
-                f"Single Trial time take: {(time.time_ns() - start_time) / 1_000_000_000}s"
+                n=n, sigma=sigma, hole_density=hole_density,
+                outlier_density=outlier_density, methods=METHODS,
+                topology=topology,
             )
             for label in METHODS:
                 trial_errors[label].append(errs[label])
@@ -900,6 +242,7 @@ def experiment_vary_noise(
     hole_density: float = 0.5,
     outlier_density: float = 0.0,
     n_trials: int = 20,
+    topology: str = "multilane",
 ) -> Tuple[Dict[str, List[float]], Dict[str, List[float]]]:
     """
     Experiment 2: vary the noise level, keeping graph size and connectivity fixed.
@@ -910,7 +253,10 @@ def experiment_vary_noise(
     """
     print("\n" + "=" * 60)
     print("EXPERIMENT 2: Varying noise level")
-    print(f"  n={n}, ρ={hole_density}, γ={outlier_density}, trials={n_trials}")
+    print(
+        f"  topology={topology}, n={n}, ρ={hole_density}, "
+        f"γ={outlier_density}, trials={n_trials}"
+    )
     print("=" * 60)
 
     error_results = {label: [] for label in METHODS}
@@ -922,11 +268,9 @@ def experiment_vary_noise(
 
         for t in range(n_trials):
             errs, tms = run_single_trial(
-                n=n,
-                sigma=sigma,
-                hole_density=hole_density,
-                outlier_density=outlier_density,
-                methods=METHODS,
+                n=n, sigma=sigma, hole_density=hole_density,
+                outlier_density=outlier_density, methods=METHODS,
+                topology=topology,
             )
             for label in METHODS:
                 trial_errors[label].append(errs[label])
@@ -955,6 +299,7 @@ def experiment_vary_holes(
     sigma: float = 0.05,
     outlier_density: float = 0.0,
     n_trials: int = 20,
+    topology: str = "multilane",
 ) -> Tuple[Dict[str, List[float]], Dict[str, List[float]]]:
     """
     Experiment 3: vary the fraction of missing edges (hole density).
@@ -966,7 +311,10 @@ def experiment_vary_holes(
     """
     print("\n" + "=" * 60)
     print("EXPERIMENT 3: Varying hole density")
-    print(f"  n={n}, σ={sigma}, γ={outlier_density}, trials={n_trials}")
+    print(
+        f"  topology={topology}, n={n}, σ={sigma}, "
+        f"γ={outlier_density}, trials={n_trials}"
+    )
     print("=" * 60)
 
     error_results = {label: [] for label in METHODS}
@@ -978,11 +326,9 @@ def experiment_vary_holes(
 
         for t in range(n_trials):
             errs, tms = run_single_trial(
-                n=n,
-                sigma=sigma,
-                hole_density=rho,
-                outlier_density=outlier_density,
-                methods=METHODS,
+                n=n, sigma=sigma, hole_density=rho,
+                outlier_density=outlier_density, methods=METHODS,
+                topology=topology,
             )
             for label in METHODS:
                 trial_errors[label].append(errs[label])
@@ -1001,6 +347,199 @@ def experiment_vary_holes(
                 for label in METHODS
             )
         )
+
+    return error_results, time_results
+
+
+# ===================================================================
+# Experiment 4: vary graph topology
+# ===================================================================
+
+
+# Each topology configuration specifies how to build the graph and
+# a human-readable label for display.
+TOPOLOGY_CONFIGS = [
+    {
+        "label": "Linear (bw=1)",
+        "topology": "linear",
+        "extra": {"bandwidth": 1},
+    },
+    {
+        "label": "Linear (bw=3)",
+        "topology": "linear",
+        "extra": {"bandwidth": 3},
+    },
+    {
+        "label": "Circular (chord=1)",
+        "topology": "circular",
+        "extra": {"chord_step": 1},
+    },
+    {
+        "label": "Circular (chord=3)",
+        "topology": "circular",
+        "extra": {"chord_step": 3},
+    },
+    {
+        "label": "Grid (4-conn)",
+        "topology": "grid",
+        "extra": {"diagonal_edges": False},
+    },
+    {
+        "label": "Grid (8-conn)",
+        "topology": "grid",
+        "extra": {"diagonal_edges": True},
+    },
+    {
+        "label": "Multilane (3 lanes)",
+        "topology": "multilane",
+        "extra": {"num_lanes": 3, "bandwidth": 3},
+    },
+    {
+        "label": "Random (Erdős–Rényi)",
+        "topology": "random",
+        "extra": {},
+    },
+]
+
+
+def _build_for_topology_config(
+    cfg: dict,
+    n: int,
+    sigma: float,
+    hole_density: float,
+    outlier_density: float,
+) -> Tuple[Graph, Dict[int, np.ndarray]]:
+    """
+    Internal helper: build a graph from a topology configuration dict.
+
+    Dispatches to the appropriate ``build_*`` function based on the
+    ``"topology"`` key, forwarding any extra keyword arguments from
+    ``cfg["extra"]``.
+    """
+    topo = cfg["topology"]
+    extra = cfg.get("extra", {})
+
+    if topo == "random":
+        return build_synthetic_graph(
+            n=n, sigma=sigma, hole_density=hole_density,
+            outlier_density=outlier_density, **extra,
+        )
+    elif topo == "linear":
+        return build_linear_graph(
+            n=n, sigma=sigma, hole_density=hole_density,
+            outlier_density=outlier_density,
+            bandwidth=extra.get("bandwidth", 1),
+        )
+    elif topo == "circular":
+        return build_circular_graph(
+            n=n, sigma=sigma, hole_density=hole_density,
+            outlier_density=outlier_density,
+            chord_step=extra.get("chord_step", 1),
+        )
+    elif topo == "grid":
+        cols = int(np.ceil(np.sqrt(n)))
+        rows = int(np.ceil(n / cols))
+        return build_grid_graph(
+            rows=rows, cols=cols, sigma=sigma,
+            hole_density=hole_density, outlier_density=outlier_density,
+            diagonal_edges=extra.get("diagonal_edges", False),
+        )
+    elif topo == "multilane":
+        graph, gt, _ = build_multilane_graph(
+            n=n, sigma=sigma, hole_density=hole_density,
+            outlier_density=outlier_density,
+            num_lanes=extra.get("num_lanes", 3),
+            bandwidth=extra.get("bandwidth", 1),
+            cross_connect=True, diagonal_cross_density=0.15,
+        )
+        return graph, gt
+    else:
+        raise ValueError(f"Unknown topology '{topo}'.")
+
+
+def experiment_vary_topology(
+    n: int = 36,
+    sigma: float = 0.05,
+    hole_density: float = 0.2,
+    outlier_density: float = 0.0,
+    n_trials: int = 20,
+    configs: List[dict] = None,
+) -> Tuple[Dict[str, Dict[str, float]], Dict[str, Dict[str, float]]]:
+    """
+    Experiment 4: compare all methods across different graph topologies.
+
+    For each topology configuration, runs ``n_trials`` independent trials
+    and reports the median angular error and execution time per method.
+
+    Parameters
+    ----------
+    n : int
+        Number of nodes (36 gives a nice 6×6 grid and clean lane splits).
+    sigma : float
+        Noise standard deviation.
+    hole_density : float
+        Fraction of removable edges to drop.
+    outlier_density : float
+        Fraction of remaining edges replaced by outliers.
+    n_trials : int
+        Number of independent trials per configuration.
+    configs : list of dict, optional
+        Custom topology configurations.  Defaults to ``TOPOLOGY_CONFIGS``.
+
+    Returns
+    -------
+    error_results : dict[topology_label → dict[method_label → median_error]]
+    time_results  : dict[topology_label → dict[method_label → median_time]]
+    """
+    if configs is None:
+        configs = TOPOLOGY_CONFIGS
+
+    print("\n" + "=" * 60)
+    print("EXPERIMENT 4: Varying graph topology")
+    print(
+        f"  n={n}, σ={sigma}, ρ={hole_density}, "
+        f"γ={outlier_density}, trials={n_trials}"
+    )
+    print("=" * 60)
+
+    error_results: Dict[str, Dict[str, float]] = {}
+    time_results: Dict[str, Dict[str, float]] = {}
+
+    for cfg in configs:
+        topo_label = cfg["label"]
+        trial_errors = {label: [] for label in METHODS}
+        trial_times = {label: [] for label in METHODS}
+
+        for _ in range(n_trials):
+            base_graph, ground_truth = _build_for_topology_config(
+                cfg, n=n, sigma=sigma,
+                hole_density=hole_density, outlier_density=outlier_density,
+            )
+
+            for method_label, sync_fn in METHODS.items():
+                g = base_graph.copy()
+                g.normalize()
+
+                t0 = time.perf_counter()
+                sync_fn(g)
+                elapsed = time.perf_counter() - t0
+
+                err = calculate_angular_error(g, ground_truth)
+                trial_errors[method_label].append(err)
+                trial_times[method_label].append(elapsed)
+
+        # Collect medians.
+        error_results[topo_label] = {
+            m: np.median(trial_errors[m]) for m in METHODS
+        }
+        time_results[topo_label] = {
+            m: np.median(trial_times[m]) for m in METHODS
+        }
+
+        row = " | ".join(
+            f"{m}: {error_results[topo_label][m]:.2f}°" for m in METHODS
+        )
+        print(f"  {topo_label:25s} | {row}")
 
     return error_results, time_results
 
@@ -1061,6 +600,57 @@ def plot_results(
     plt.show()
 
 
+def plot_topology_results(
+    error_data: Dict[str, Dict[str, float]],
+    time_data: Dict[str, Dict[str, float]],
+    title: str = "Topology comparison",
+    save_path: str = None,
+) -> None:
+    """
+    Plot experiment 4 results as grouped bar charts.
+
+    One bar group per topology, one bar per method.
+    Left subplot: error.  Right subplot: execution time.
+    """
+    topo_labels = list(error_data.keys())
+    method_labels = list(METHODS.keys())
+    n_topos = len(topo_labels)
+    n_methods = len(method_labels)
+
+    x = np.arange(n_topos)
+    bar_width = 0.8 / n_methods
+
+    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(16, 6))
+
+    for i, method in enumerate(method_labels):
+        errors = [error_data[t][method] for t in topo_labels]
+        times = [time_data[t][method] for t in topo_labels]
+        color = STYLE.get(method, {}).get("color", "gray")
+
+        ax1.bar(x + i * bar_width, errors, bar_width,
+                label=method, color=color, alpha=0.85)
+        ax2.bar(x + i * bar_width, times, bar_width,
+                label=method, color=color, alpha=0.85)
+
+    for ax, ylabel, subtitle in [
+        (ax1, "Error (degrees)", "Error"),
+        (ax2, "Time (seconds)", "Execution time"),
+    ]:
+        ax.set_xlabel("Topology")
+        ax.set_ylabel(ylabel)
+        ax.set_title(f"{title} — {subtitle}")
+        ax.set_xticks(x + bar_width * (n_methods - 1) / 2)
+        ax.set_xticklabels(topo_labels, rotation=30, ha="right", fontsize=8)
+        ax.legend(fontsize=7)
+        ax.grid(True, axis="y", linestyle="--", alpha=0.4)
+
+    plt.tight_layout()
+    if save_path:
+        plt.savefig(save_path, dpi=150, bbox_inches="tight")
+        print(f"  Plot saved to {save_path}")
+    plt.show()
+
+
 # ===================================================================
 # Main
 # ===================================================================
@@ -1068,12 +658,13 @@ def plot_results(
 
 def main():
     """
-    Run all three experiments and produce comparison plots.
+    Run all four experiments and produce comparison plots.
 
     The experimental setup follows the structure in Sec. 5.2 of [1]:
       • Experiment 1: n ∈ {10, 20, 30, 50, 75, 100}, σ=0.05, ρ=0.5
       • Experiment 2: σ ∈ [0.01, 0.15], n=25, ρ=0.5
       • Experiment 3: ρ ∈ [0.0, 0.9], n=25, σ=0.05
+      • Experiment 4: topology ∈ {linear, circular, grid, multilane, random}
     """
     # ---- Experiment 1: varying nodes ----
     node_counts = [10, 20, 30, 50, 75, 100]
@@ -1081,9 +672,7 @@ def main():
         node_counts, sigma=0.05, hole_density=0.5, n_trials=20
     )
     plot_results(
-        node_counts,
-        err1,
-        time1,
+        node_counts, err1, time1,
         xlabel="Number of Nodes",
         title="Varying graph size",
         save_path="exp1_vary_nodes.png",
@@ -1095,9 +684,7 @@ def main():
         noise_levels, n=25, hole_density=0.5, n_trials=20
     )
     plot_results(
-        noise_levels,
-        err2,
-        time2,
+        noise_levels, err2, time2,
         xlabel="Noise σ",
         title="Varying noise level",
         save_path="exp2_vary_noise.png",
@@ -1109,12 +696,20 @@ def main():
         hole_densities, n=25, sigma=0.05, n_trials=20
     )
     plot_results(
-        hole_densities,
-        err3,
-        time3,
+        hole_densities, err3, time3,
         xlabel="Hole Density ρ",
         title="Varying hole density",
         save_path="exp3_vary_holes.png",
+    )
+
+    # ---- Experiment 4: varying topology ----
+    err4, time4 = experiment_vary_topology(
+        n=36, sigma=0.05, hole_density=0.2, n_trials=20
+    )
+    plot_topology_results(
+        err4, time4,
+        title="Topology comparison",
+        save_path="exp4_vary_topology.png",
     )
 
     # ---- Summary ----
@@ -1143,6 +738,14 @@ def main():
       - Accumulates errors from root to leaves
       - Does not exploit redundant measurements
       - Performance degrades as graph size increases
+
+    Topology observations (Experiment 4):
+      • Linear graphs (low bandwidth) stress error accumulation the most,
+        widening the gap between tree and iterative/spectral methods.
+      • Circular graphs provide loop closure, which helps all methods.
+      • Grid graphs with 8-connectivity offer dense local redundancy,
+        favouring spectral approaches.
+      • Multilane graphs are a realistic proxy for multi-strip mosaicking.
     """)
 
 
