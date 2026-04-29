@@ -1,6 +1,7 @@
 import os
 import cv2 as cv
 
+
 def compress_dataset(filepaths, output_dir, scale=0.25, jpeg_quality=70):
     """
     Compress images from a list of filepaths and save to output_dir.
@@ -31,17 +32,17 @@ def compress_dataset(filepaths, output_dir, scale=0.25, jpeg_quality=70):
             out_path = os.path.join(output_dir, filename)
 
             # Save compressed
-            cv.imwrite(out_path, img_small, [cv.IMWRITE_JPEG_QUALITY, jpeg_quality])
+            cv.imwrite(
+                out_path, img_small, [cv.IMWRITE_JPEG_QUALITY, jpeg_quality]
+            )
 
             print(f"Saved: {out_path}")
 
         except Exception as e:
             print(f"Error processing {path}: {e}")
 
+
 if __name__ == "__main__":
-    dataset = [
-        f"iacv/IMG_{i}.png"
-        for i in range(4714, 4714 + 30)
-    ]
+    dataset = [f"iacv/IMG_{i}.png" for i in range(4714, 4714 + 30)]
 
     compress_dataset(dataset, "compressed_images", scale=0.25, jpeg_quality=100)

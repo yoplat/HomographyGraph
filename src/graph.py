@@ -607,8 +607,8 @@ def build_synthetic_graph(
     connectivity.
 
     The underlying topology is a complete graph with edges randomly
-    removed according to ``hole_density``.  Connectivity is not
-    guaranteed — the caller should check.
+    removed according to ``hole_density``.  A spanning-tree repair step
+    guarantees the result is always connected.
 
     Parameters
     ----------
@@ -649,6 +649,18 @@ def build_synthetic_graph(
             noisy_rel = add_noise(rel_ij, sigma=sigma)
             graph.add_edge(i, j, noisy_rel)
 
+    # 2b. Spanning-tree repair: if hole removal disconnected the graph,
+    #     add the minimum number of missing edges to restore connectivity.
+    G_check = nx.Graph()
+    G_check.add_nodes_from(range(n))
+    G_check.add_edges_from((i, j) for (i, j) in graph.edges.keys() if i < j)
+    if not nx.is_connected(G_check):
+        for i, j in nx.minimum_spanning_edges(nx.complement(G_check), data=False):
+            if not nx.is_connected(G_check):
+                rel_ij = ground_truth[i] @ np.linalg.inv(ground_truth[j])
+                graph.add_edge(i, j, add_noise(rel_ij, sigma=sigma))
+                G_check.add_edge(i, j)
+
     # 3. Inject outlier edges.
     if outlier_density > 0:
         edge_keys = [(i, j) for (i, j) in graph.edges.keys() if i < j]
@@ -666,6 +678,7 @@ def build_synthetic_graph(
 # ─────────────────────────────────────────────────────────────────────────────
 # Linear (chain) graph: 0 ─ 1 ─ 2 ─ ... ─ (n-1)
 # ─────────────────────────────────────────────────────────────────────────────
+
 
 def build_linear_graph(
     n: int,
@@ -716,7 +729,7 @@ def build_linear_graph(
     #    k=1 → backbone: always included (no dropout).
     #    k≥2 → shortcuts: subject to hole_density.
     for k in range(1, bandwidth + 1):
-        is_backbone = (k == 1)
+        is_backbone = k == 1
         for i in range(n - k):
             j = i + k
             if not is_backbone and np.random.rand() < hole_density:
@@ -728,7 +741,9 @@ def build_linear_graph(
     if outlier_density > 0:
         edge_keys = [(i, j) for (i, j) in graph.edges.keys() if i < j]
         n_outliers = int(len(edge_keys) * outlier_density)
-        for idx in np.random.choice(len(edge_keys), size=n_outliers, replace=False):
+        for idx in np.random.choice(
+            len(edge_keys), size=n_outliers, replace=False
+        ):
             i, j = edge_keys[idx]
             add_outlier_edge(graph, i, j)
 
@@ -738,6 +753,7 @@ def build_linear_graph(
 # ─────────────────────────────────────────────────────────────────────────────
 # Circular (ring / cycle) graph: 0 ─ 1 ─ … ─ (n-1) ─ 0
 # ─────────────────────────────────────────────────────────────────────────────
+
 
 def build_circular_graph(
     n: int,
@@ -784,7 +800,7 @@ def build_circular_graph(
 
     seen: set = set()
     for k in range(1, chord_step + 1):
-        is_ring = (k == 1)          # ring edges are protected
+        is_ring = k == 1  # ring edges are protected
         for i in range(n):
             j = (i + k) % n
             key = (min(i, j), max(i, j))
@@ -800,7 +816,9 @@ def build_circular_graph(
     if outlier_density > 0:
         edge_keys = [(i, j) for (i, j) in graph.edges.keys() if i < j]
         n_outliers = int(len(edge_keys) * outlier_density)
-        for idx in np.random.choice(len(edge_keys), size=n_outliers, replace=False):
+        for idx in np.random.choice(
+            len(edge_keys), size=n_outliers, replace=False
+        ):
             i, j = edge_keys[idx]
             add_outlier_edge(graph, i, j)
 
@@ -810,6 +828,7 @@ def build_circular_graph(
 # ─────────────────────────────────────────────────────────────────────────────
 # Grid (lattice) graph: nodes on an r × c grid, edges to 4-neighbours
 # ─────────────────────────────────────────────────────────────────────────────
+
 
 def build_grid_graph(
     rows: int,
@@ -877,12 +896,11 @@ def build_grid_graph(
     # For every missing tree edge, force-insert it so no node is isolated.
     G_check = nx.Graph()
     G_check.add_nodes_from(range(n))
-    G_check.add_edges_from(
-        (i, j) for (i, j) in graph.edges.keys() if i < j
-    )
+    G_check.add_edges_from((i, j) for (i, j) in graph.edges.keys() if i < j)
     if not nx.is_connected(G_check):
         for i, j in nx.minimum_spanning_edges(
-            nx.complement(G_check), data=False   # edges NOT yet in graph
+            nx.complement(G_check),
+            data=False,  # edges NOT yet in graph
         ):
             # Only add enough edges to connect the components.
             if not nx.is_connected(G_check):
@@ -893,7 +911,9 @@ def build_grid_graph(
     if outlier_density > 0:
         edge_keys = [(i, j) for (i, j) in graph.edges.keys() if i < j]
         n_outliers = int(len(edge_keys) * outlier_density)
-        for idx in np.random.choice(len(edge_keys), size=n_outliers, replace=False):
+        for idx in np.random.choice(
+            len(edge_keys), size=n_outliers, replace=False
+        ):
             i, j = edge_keys[idx]
             add_outlier_edge(graph, i, j)
 
@@ -903,6 +923,7 @@ def build_grid_graph(
 # ─────────────────────────────────────────────────────────────────────────────
 # Multi-lane linear graph: parallel chains with lateral connections
 # ─────────────────────────────────────────────────────────────────────────────
+
 
 def build_multilane_graph(
     n: int,
@@ -958,7 +979,7 @@ def build_multilane_graph(
 
     # Actual lane sizes (last lane may be shorter).
     lane_sizes = [n_per_lane] * (num_lanes - 1)
-    lane_sizes.append(n - n_per_lane * (num_lanes - 1))   # remainder
+    lane_sizes.append(n - n_per_lane * (num_lanes - 1))  # remainder
 
     graph = Graph()
     ground_truth: Dict[int, np.ndarray] = {}
@@ -990,7 +1011,7 @@ def build_multilane_graph(
     for lane in range(num_lanes):
         size = lane_sizes[lane]
         for k in range(1, bandwidth + 1):
-            is_backbone = (k == 1)
+            is_backbone = k == 1
             for col in range(size - k):
                 if not is_backbone and np.random.rand() < hole_density:
                     continue
@@ -1013,7 +1034,7 @@ def build_multilane_graph(
                             continue
                         if np.random.rand() < diagonal_cross_density:
                             _try_add(
-                                node_id(lane,     col),
+                                node_id(lane, col),
                                 node_id(lane + 1, target_col),
                             )
 
@@ -1021,7 +1042,9 @@ def build_multilane_graph(
     if outlier_density > 0:
         edge_keys = [(i, j) for (i, j) in graph.edges.keys() if i < j]
         n_outliers = int(len(edge_keys) * outlier_density)
-        for idx in np.random.choice(len(edge_keys), size=n_outliers, replace=False):
+        for idx in np.random.choice(
+            len(edge_keys), size=n_outliers, replace=False
+        ):
             i, j = edge_keys[idx]
             add_outlier_edge(graph, i, j)
 
@@ -1098,7 +1121,7 @@ def visualize_graph(
     # ── 1. Build a NetworkX graph from the custom Graph object ──────────────
     G = nx.Graph()
     G.add_nodes_from(graph.vertices.keys())
-    for (i, j) in graph.edges.keys():
+    for i, j in graph.edges.keys():
         if i < j:
             G.add_edge(i, j)
 
@@ -1109,7 +1132,11 @@ def visualize_graph(
     def _is_path_like(G: nx.Graph) -> bool:
         """True when the graph looks like a (possibly sparse) chain."""
         degrees = [d for _, d in G.degree()]
-        return max(degrees) <= 3 and nx.is_connected(G) and not nx.is_biconnected(G)
+        return (
+            max(degrees) <= 3
+            and nx.is_connected(G)
+            and not nx.is_biconnected(G)
+        )
 
     def _is_ring_like(G: nx.Graph) -> bool:
         """True when every node has degree 2 or when the graph is a single cycle."""
@@ -1165,9 +1192,9 @@ def visualize_graph(
     if outlier_edges is not None:
         outlier_set = {(min(i, j), max(i, j)) for i, j in outlier_edges}
 
-    inlier_edgelist  = []
+    inlier_edgelist = []
     outlier_edgelist = []
-    for (i, j) in G.edges():
+    for i, j in G.edges():
         key = (min(i, j), max(i, j))
         if key in outlier_set:
             outlier_edgelist.append((i, j))
@@ -1183,72 +1210,105 @@ def visualize_graph(
 
     # Inlier edges
     nx.draw_networkx_edges(
-        G, pos, edgelist=inlier_edgelist, ax=ax,
-        edge_color="#01696f", alpha=0.65, width=1.6,
+        G,
+        pos,
+        edgelist=inlier_edgelist,
+        ax=ax,
+        edge_color="#01696f",
+        alpha=0.65,
+        width=1.6,
     )
     # Outlier edges
     if outlier_edgelist:
         nx.draw_networkx_edges(
-            G, pos, edgelist=outlier_edgelist, ax=ax,
-            edge_color="#a12c7b", alpha=0.85, width=2.2,
+            G,
+            pos,
+            edgelist=outlier_edgelist,
+            ax=ax,
+            edge_color="#a12c7b",
+            alpha=0.85,
+            width=2.2,
             style="dashed",
         )
 
     # Node fill: white if initialised (all vertices start at I), teal if solved
-    node_colors = ["#cedcd8" if np.allclose(graph.vertices[v], np.eye(3)) else "#01696f"
-                   for v in nodes]
+    node_colors = [
+        "#cedcd8" if np.allclose(graph.vertices[v], np.eye(3)) else "#01696f"
+        for v in nodes
+    ]
     nx.draw_networkx_nodes(
-        G, pos, nodelist=nodes, ax=ax,
-        node_color=node_colors, edgecolors="#01696f",
-        node_size=max(80, min(500, 4000 // n)), linewidths=1.8,
+        G,
+        pos,
+        nodelist=nodes,
+        ax=ax,
+        node_color=node_colors,
+        edgecolors="#01696f",
+        node_size=max(80, min(500, 4000 // n)),
+        linewidths=1.8,
     )
 
     # Labels — hide when the graph is large
     if n <= 40:
         nx.draw_networkx_labels(
-            G, pos, ax=ax,
+            G,
+            pos,
+            ax=ax,
             font_size=max(6, min(10, 120 // n)),
-            font_color="#28251d", font_weight="bold",
+            font_color="#28251d",
+            font_weight="bold",
         )
 
     # ── 6. Stats annotation ──────────────────────────────────────────────────
-    n_edges   = G.number_of_edges()
-    n_out     = len(outlier_edgelist)
+    n_edges = G.number_of_edges()
+    n_out = len(outlier_edgelist)
     connected = nx.is_connected(G) if n_edges > 0 else False
-    density   = nx.density(G)
+    density = nx.density(G)
 
     stats = (
         f"n={n}  |  edges={n_edges}  |  density={density:.2f}\n"
         f"connected={'yes' if connected else 'NO ⚠'}  |  "
-        f"outliers={n_out} ({100*n_out/max(n_edges,1):.0f}%)"
+        f"outliers={n_out} ({100 * n_out / max(n_edges, 1):.0f}%)"
     )
     ax.text(
-        0.02, 0.02, stats,
+        0.02,
+        0.02,
+        stats,
         transform=ax.transAxes,
-        fontsize=8, color="#7a7974",
+        fontsize=8,
+        color="#7a7974",
         verticalalignment="bottom",
         fontfamily="monospace",
-        bbox=dict(boxstyle="round,pad=0.3", facecolor="#f9f8f5", edgecolor="#dcd9d5"),
+        bbox=dict(
+            boxstyle="round,pad=0.3", facecolor="#f9f8f5", edgecolor="#dcd9d5"
+        ),
     )
 
     # ── 7. Legend ────────────────────────────────────────────────────────────
     legend_items = [
-        mpatches.Patch(facecolor="#cedcd8", edgecolor="#01696f", label="vertex  (I init)"),
-        mpatches.Patch(facecolor="#01696f", edgecolor="#01696f", label="vertex  (solved)"),
-        mpatches.Patch(facecolor="#01696f", alpha=0.65,          label="inlier edge"),
+        mpatches.Patch(
+            facecolor="#cedcd8", edgecolor="#01696f", label="vertex  (I init)"
+        ),
+        mpatches.Patch(
+            facecolor="#01696f", edgecolor="#01696f", label="vertex  (solved)"
+        ),
+        mpatches.Patch(facecolor="#01696f", alpha=0.65, label="inlier edge"),
     ]
     if outlier_edgelist:
         legend_items.append(
-            mpatches.Patch(facecolor="#a12c7b", alpha=0.85, label="outlier edge")
+            mpatches.Patch(
+                facecolor="#a12c7b", alpha=0.85, label="outlier edge"
+            )
         )
     ax.legend(
-        handles=legend_items, loc="upper right",
-        fontsize=8, framealpha=0.9,
-        facecolor="#f9f8f5", edgecolor="#dcd9d5",
+        handles=legend_items,
+        loc="upper right",
+        fontsize=8,
+        framealpha=0.9,
+        facecolor="#f9f8f5",
+        edgecolor="#dcd9d5",
     )
 
-    ax.set_title(title, fontsize=12, fontweight="bold",
-                 color="#28251d", pad=12)
+    ax.set_title(title, fontsize=12, fontweight="bold", color="#28251d", pad=12)
     ax.axis("off")
     plt.tight_layout()
     return ax

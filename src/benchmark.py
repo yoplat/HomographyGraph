@@ -49,6 +49,7 @@ from graph import (
     build_grid_graph,
     build_multilane_graph,
 )
+from mosaic import create_graph_from_images, calculate_reprojection_error
 
 # Reproducibility.
 SEED = 42
@@ -88,7 +89,7 @@ def run_single_trial(
     hole_density: float,
     outlier_density: float,
     methods: Dict[str, callable],
-    topology: str = "multilane",
+    topology: str = "random",
 ) -> Tuple[Dict[str, float], Dict[str, float]]:
     """
     Run one trial: build a synthetic graph, run all methods, return errors
@@ -120,33 +121,49 @@ def run_single_trial(
     # ── Build graph according to requested topology ──────────────────────
     if topology == "random":
         base_graph, ground_truth = build_synthetic_graph(
-            n=n, sigma=sigma, hole_density=hole_density,
+            n=n,
+            sigma=sigma,
+            hole_density=hole_density,
             outlier_density=outlier_density,
         )
     elif topology == "linear":
         base_graph, ground_truth = build_linear_graph(
-            n=n, sigma=sigma, hole_density=hole_density,
-            outlier_density=outlier_density, bandwidth=3,
+            n=n,
+            sigma=sigma,
+            hole_density=hole_density,
+            outlier_density=outlier_density,
+            bandwidth=3,
         )
     elif topology == "circular":
         base_graph, ground_truth = build_circular_graph(
-            n=n, sigma=sigma, hole_density=hole_density,
-            outlier_density=outlier_density, chord_step=3,
+            n=n,
+            sigma=sigma,
+            hole_density=hole_density,
+            outlier_density=outlier_density,
+            chord_step=3,
         )
     elif topology == "grid":
         # Choose the most square-like layout for n nodes.
         cols = int(np.ceil(np.sqrt(n)))
         rows = int(np.ceil(n / cols))
         base_graph, ground_truth = build_grid_graph(
-            rows=rows, cols=cols, sigma=sigma,
-            hole_density=hole_density, outlier_density=outlier_density,
+            rows=rows,
+            cols=cols,
+            sigma=sigma,
+            hole_density=hole_density,
+            outlier_density=outlier_density,
             diagonal_edges=True,
         )
     elif topology == "multilane":
         base_graph, ground_truth, _ = build_multilane_graph(
-            n=n, num_lanes=3, sigma=sigma,
-            hole_density=hole_density, outlier_density=outlier_density,
-            bandwidth=3, cross_connect=True, diagonal_cross_density=0.15,
+            n=n,
+            num_lanes=3,
+            sigma=sigma,
+            hole_density=hole_density,
+            outlier_density=outlier_density,
+            bandwidth=3,
+            cross_connect=True,
+            diagonal_cross_density=0.15,
         )
     else:
         raise ValueError(f"Unknown topology '{topology}'.")
@@ -182,7 +199,7 @@ def experiment_vary_nodes(
     hole_density: float = 0.5,
     outlier_density: float = 0.0,
     n_trials: int = 20,
-    topology: str = "multilane",
+    topology: str = "random",
 ) -> Tuple[Dict[str, List[float]], Dict[str, List[float]]]:
     """
     Experiment 1: vary the number of nodes, keeping noise and hole density fixed.
@@ -211,8 +228,11 @@ def experiment_vary_nodes(
 
         for t in range(n_trials):
             errs, tms = run_single_trial(
-                n=n, sigma=sigma, hole_density=hole_density,
-                outlier_density=outlier_density, methods=METHODS,
+                n=n,
+                sigma=sigma,
+                hole_density=hole_density,
+                outlier_density=outlier_density,
+                methods=METHODS,
                 topology=topology,
             )
             for label in METHODS:
@@ -228,8 +248,7 @@ def experiment_vary_nodes(
         print(
             f"  n={n:3d} | "
             + " | ".join(
-                f"{label}: {error_results[label][-1]:.2f}°"
-                for label in METHODS
+                f"{label}: {error_results[label][-1]:.2f}°" for label in METHODS
             )
         )
 
@@ -242,7 +261,7 @@ def experiment_vary_noise(
     hole_density: float = 0.5,
     outlier_density: float = 0.0,
     n_trials: int = 20,
-    topology: str = "multilane",
+    topology: str = "random",
 ) -> Tuple[Dict[str, List[float]], Dict[str, List[float]]]:
     """
     Experiment 2: vary the noise level, keeping graph size and connectivity fixed.
@@ -268,8 +287,11 @@ def experiment_vary_noise(
 
         for t in range(n_trials):
             errs, tms = run_single_trial(
-                n=n, sigma=sigma, hole_density=hole_density,
-                outlier_density=outlier_density, methods=METHODS,
+                n=n,
+                sigma=sigma,
+                hole_density=hole_density,
+                outlier_density=outlier_density,
+                methods=METHODS,
                 topology=topology,
             )
             for label in METHODS:
@@ -285,8 +307,7 @@ def experiment_vary_noise(
         print(
             f"  σ={sigma:.3f} | "
             + " | ".join(
-                f"{label}: {error_results[label][-1]:.2f}°"
-                for label in METHODS
+                f"{label}: {error_results[label][-1]:.2f}°" for label in METHODS
             )
         )
 
@@ -299,7 +320,7 @@ def experiment_vary_holes(
     sigma: float = 0.05,
     outlier_density: float = 0.0,
     n_trials: int = 20,
-    topology: str = "multilane",
+    topology: str = "random",
 ) -> Tuple[Dict[str, List[float]], Dict[str, List[float]]]:
     """
     Experiment 3: vary the fraction of missing edges (hole density).
@@ -326,8 +347,11 @@ def experiment_vary_holes(
 
         for t in range(n_trials):
             errs, tms = run_single_trial(
-                n=n, sigma=sigma, hole_density=rho,
-                outlier_density=outlier_density, methods=METHODS,
+                n=n,
+                sigma=sigma,
+                hole_density=rho,
+                outlier_density=outlier_density,
+                methods=METHODS,
                 topology=topology,
             )
             for label in METHODS:
@@ -343,8 +367,7 @@ def experiment_vary_holes(
         print(
             f"  ρ={rho:.2f} | "
             + " | ".join(
-                f"{label}: {error_results[label][-1]:.2f}°"
-                for label in METHODS
+                f"{label}: {error_results[label][-1]:.2f}°" for label in METHODS
             )
         )
 
@@ -421,18 +444,25 @@ def _build_for_topology_config(
 
     if topo == "random":
         return build_synthetic_graph(
-            n=n, sigma=sigma, hole_density=hole_density,
-            outlier_density=outlier_density, **extra,
+            n=n,
+            sigma=sigma,
+            hole_density=hole_density,
+            outlier_density=outlier_density,
+            **extra,
         )
     elif topo == "linear":
         return build_linear_graph(
-            n=n, sigma=sigma, hole_density=hole_density,
+            n=n,
+            sigma=sigma,
+            hole_density=hole_density,
             outlier_density=outlier_density,
             bandwidth=extra.get("bandwidth", 1),
         )
     elif topo == "circular":
         return build_circular_graph(
-            n=n, sigma=sigma, hole_density=hole_density,
+            n=n,
+            sigma=sigma,
+            hole_density=hole_density,
             outlier_density=outlier_density,
             chord_step=extra.get("chord_step", 1),
         )
@@ -440,17 +470,23 @@ def _build_for_topology_config(
         cols = int(np.ceil(np.sqrt(n)))
         rows = int(np.ceil(n / cols))
         return build_grid_graph(
-            rows=rows, cols=cols, sigma=sigma,
-            hole_density=hole_density, outlier_density=outlier_density,
+            rows=rows,
+            cols=cols,
+            sigma=sigma,
+            hole_density=hole_density,
+            outlier_density=outlier_density,
             diagonal_edges=extra.get("diagonal_edges", False),
         )
     elif topo == "multilane":
         graph, gt, _ = build_multilane_graph(
-            n=n, sigma=sigma, hole_density=hole_density,
+            n=n,
+            sigma=sigma,
+            hole_density=hole_density,
             outlier_density=outlier_density,
             num_lanes=extra.get("num_lanes", 3),
             bandwidth=extra.get("bandwidth", 1),
-            cross_connect=True, diagonal_cross_density=0.15,
+            cross_connect=True,
+            diagonal_cross_density=0.15,
         )
         return graph, gt
     else:
@@ -512,8 +548,11 @@ def experiment_vary_topology(
 
         for _ in range(n_trials):
             base_graph, ground_truth = _build_for_topology_config(
-                cfg, n=n, sigma=sigma,
-                hole_density=hole_density, outlier_density=outlier_density,
+                cfg,
+                n=n,
+                sigma=sigma,
+                hole_density=hole_density,
+                outlier_density=outlier_density,
             )
 
             for method_label, sync_fn in METHODS.items():
@@ -540,6 +579,67 @@ def experiment_vary_topology(
             f"{m}: {error_results[topo_label][m]:.2f}°" for m in METHODS
         )
         print(f"  {topo_label:25s} | {row}")
+
+    return error_results, time_results
+
+
+# ===================================================================
+# Experiment 5: real image data
+# ===================================================================
+
+
+def experiment_real_data(
+    dataset_paths: List[str],
+    methods: Dict[str, callable] = None,
+) -> Tuple[Dict[str, float], Dict[str, float]]:
+    """
+    Benchmark all synchronization methods on a real image dataset.
+
+    The homography graph is built once via SIFT feature extraction and
+    pairwise RANSAC matching (the expensive step), then each method runs
+    on an independent copy.  Quality is measured as mean reprojection
+    error in pixels — lower is better.  No ground-truth homographies are
+    needed.
+
+    Parameters
+    ----------
+    dataset_paths : list of str
+        File paths to the input images.
+    methods : dict, optional
+        Registry of {label: callable} to benchmark.  Defaults to METHODS.
+
+    Returns
+    -------
+    error_results : dict {label: reprojection_error_px}
+    time_results  : dict {label: seconds}
+    """
+    if methods is None:
+        methods = METHODS
+
+    print("\n" + "=" * 60)
+    print("EXPERIMENT 5: Real image data")
+    print(f"  {len(dataset_paths)} images, metric = reprojection error (px)")
+    print("=" * 60)
+
+    # Build the graph once — SIFT + RANSAC is the bottleneck.
+    base_graph, matches_data, _ = create_graph_from_images(dataset_paths)
+
+    error_results: Dict[str, float] = {}
+    time_results: Dict[str, float] = {}
+
+    for label, sync_fn in methods.items():
+        g = base_graph.copy()
+        g.normalize()
+
+        t0 = time.perf_counter()
+        sync_fn(g)
+        elapsed = time.perf_counter() - t0
+
+        err = calculate_reprojection_error(g, matches_data)
+        error_results[label] = err
+        time_results[label] = elapsed
+
+        print(f"  {label:12s} | {err:7.2f} px | {elapsed:.3f} s")
 
     return error_results, time_results
 
@@ -627,10 +727,22 @@ def plot_topology_results(
         times = [time_data[t][method] for t in topo_labels]
         color = STYLE.get(method, {}).get("color", "gray")
 
-        ax1.bar(x + i * bar_width, errors, bar_width,
-                label=method, color=color, alpha=0.85)
-        ax2.bar(x + i * bar_width, times, bar_width,
-                label=method, color=color, alpha=0.85)
+        ax1.bar(
+            x + i * bar_width,
+            errors,
+            bar_width,
+            label=method,
+            color=color,
+            alpha=0.85,
+        )
+        ax2.bar(
+            x + i * bar_width,
+            times,
+            bar_width,
+            label=method,
+            color=color,
+            alpha=0.85,
+        )
 
     for ax, ylabel, subtitle in [
         (ax1, "Error (degrees)", "Error"),
@@ -651,66 +763,136 @@ def plot_topology_results(
     plt.show()
 
 
+def plot_real_data_results(
+    error_data: Dict[str, float],
+    time_data: Dict[str, float],
+    title: str = "Real data benchmark",
+    save_path: str = None,
+) -> None:
+    """
+    Plot experiment 5 results as a bar chart: one bar per method.
+    Left subplot: reprojection error (px).  Right subplot: time (s).
+    """
+    labels = list(error_data.keys())
+    errors = [error_data[m] for m in labels]
+    times = [time_data[m] for m in labels]
+    colors = [STYLE.get(m, {}).get("color", "gray") for m in labels]
+    x = np.arange(len(labels))
+
+    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(12, 5))
+
+    ax1.bar(x, errors, color=colors, alpha=0.85)
+    ax1.set_xticks(x)
+    ax1.set_xticklabels(labels)
+    ax1.set_ylabel("Reprojection error (px)")
+    ax1.set_title(f"{title} — Error")
+    ax1.grid(True, axis="y", linestyle="--", alpha=0.4)
+
+    ax2.bar(x, times, color=colors, alpha=0.85)
+    ax2.set_xticks(x)
+    ax2.set_xticklabels(labels)
+    ax2.set_ylabel("Time (seconds)")
+    ax2.set_title(f"{title} — Execution time")
+    ax2.grid(True, axis="y", linestyle="--", alpha=0.4)
+
+    plt.tight_layout()
+    if save_path:
+        plt.savefig(save_path, dpi=150, bbox_inches="tight")
+        print(f"  Plot saved to {save_path}")
+    plt.show()
+
+
 # ===================================================================
 # Main
 # ===================================================================
 
 
-def main():
+def main(start_from: int = 1):
     """
-    Run all four experiments and produce comparison plots.
+    Run all experiments and produce comparison plots.
+
+    Parameters
+    ----------
+    start_from : int
+        First experiment to run (1–5).  Experiments before this number
+        are skipped, which is useful for resuming after a crash.
 
     The experimental setup follows the structure in Sec. 5.2 of [1]:
       • Experiment 1: n ∈ {10, 20, 30, 50, 75, 100}, σ=0.05, ρ=0.5
       • Experiment 2: σ ∈ [0.01, 0.15], n=25, ρ=0.5
       • Experiment 3: ρ ∈ [0.0, 0.9], n=25, σ=0.05
       • Experiment 4: topology ∈ {linear, circular, grid, multilane, random}
+      • Experiment 5: real image data (reprojection error)
     """
     # ---- Experiment 1: varying nodes ----
-    node_counts = [10, 20, 30, 50, 75, 100]
-    err1, time1 = experiment_vary_nodes(
-        node_counts, sigma=0.05, hole_density=0.5, n_trials=20
-    )
-    plot_results(
-        node_counts, err1, time1,
-        xlabel="Number of Nodes",
-        title="Varying graph size",
-        save_path="exp1_vary_nodes.png",
-    )
+    if start_from <= 1:
+        node_counts = [10, 20, 30, 50, 75, 100]
+        err1, time1 = experiment_vary_nodes(
+            node_counts, sigma=0.05, hole_density=0.5, n_trials=20
+        )
+        plot_results(
+            node_counts,
+            err1,
+            time1,
+            xlabel="Number of Nodes",
+            title="Varying graph size",
+            save_path="exp1_vary_nodes.png",
+        )
 
     # ---- Experiment 2: varying noise ----
-    noise_levels = [0.01, 0.02, 0.04, 0.06, 0.08, 0.10, 0.12, 0.15]
-    err2, time2 = experiment_vary_noise(
-        noise_levels, n=25, hole_density=0.5, n_trials=20
-    )
-    plot_results(
-        noise_levels, err2, time2,
-        xlabel="Noise σ",
-        title="Varying noise level",
-        save_path="exp2_vary_noise.png",
-    )
+    if start_from <= 2:
+        noise_levels = [0.01, 0.02, 0.04, 0.06, 0.08, 0.10, 0.12, 0.15]
+        err2, time2 = experiment_vary_noise(
+            noise_levels, n=25, hole_density=0.5, n_trials=20
+        )
+        plot_results(
+            noise_levels,
+            err2,
+            time2,
+            xlabel="Noise σ",
+            title="Varying noise level",
+            save_path="exp2_vary_noise.png",
+        )
 
     # ---- Experiment 3: varying hole density ----
-    hole_densities = [0.0, 0.1, 0.2, 0.3, 0.5, 0.7, 0.8, 0.9]
-    err3, time3 = experiment_vary_holes(
-        hole_densities, n=25, sigma=0.05, n_trials=20
-    )
-    plot_results(
-        hole_densities, err3, time3,
-        xlabel="Hole Density ρ",
-        title="Varying hole density",
-        save_path="exp3_vary_holes.png",
-    )
+    if start_from <= 3:
+        hole_densities = [0.0, 0.1, 0.2, 0.3, 0.5, 0.7, 0.8, 0.9]
+        err3, time3 = experiment_vary_holes(
+            hole_densities, n=25, sigma=0.05, n_trials=20
+        )
+        plot_results(
+            hole_densities,
+            err3,
+            time3,
+            xlabel="Hole Density ρ",
+            title="Varying hole density",
+            save_path="exp3_vary_holes.png",
+        )
 
     # ---- Experiment 4: varying topology ----
-    err4, time4 = experiment_vary_topology(
-        n=36, sigma=0.05, hole_density=0.2, n_trials=20
-    )
-    plot_topology_results(
-        err4, time4,
-        title="Topology comparison",
-        save_path="exp4_vary_topology.png",
-    )
+    if start_from <= 4:
+        err4, time4 = experiment_vary_topology(
+            n=36, sigma=0.05, hole_density=0.2, n_trials=20
+        )
+        plot_topology_results(
+            err4,
+            time4,
+            title="Topology comparison",
+            save_path="exp4_vary_topology.png",
+        )
+
+    # ---- Experiment 5: real image data ----
+    if start_from <= 5:
+        dataset = [
+            f"compressed_images/IMG_{i}.jpg" for i in range(4714, 4714 + 10)
+        ]
+        err5, time5 = experiment_real_data(dataset)
+        plot_real_data_results(
+            err5,
+            time5,
+            title="Real image data benchmark",
+            save_path="exp5_real_data.png",
+        )
 
     # ---- Summary ----
     print("\n" + "=" * 60)
@@ -748,6 +930,80 @@ def main():
       • Multilane graphs are a realistic proxy for multi-strip mosaicking.
     """)
 
+    # ---- Step 6: combined overview image ----
+    save_combined_results()
+
+
+def save_combined_results(
+    save_path: str = "benchmark_results.png",
+) -> None:
+    """
+    Tile all available per-experiment PNGs into a single overview figure.
+
+    Loads whichever of exp1…exp5 PNG files exist on disk, so this works
+    correctly even when the benchmark was resumed mid-way with --from N
+    (earlier experiment images from a previous run are still included).
+    Layout: two experiments per row, left-aligned.
+    """
+    import os
+    import matplotlib.image as mpimg
+
+    candidates = [
+        "exp1_vary_nodes.png",
+        "exp2_vary_noise.png",
+        "exp3_vary_holes.png",
+        "exp4_vary_topology.png",
+        "exp5_real_data.png",
+    ]
+    images = [(name, mpimg.imread(name)) for name in candidates if os.path.exists(name)]
+
+    if not images:
+        print("  No experiment PNGs found — skipping combined output.")
+        return
+
+    n = len(images)
+    ncols = 2
+    nrows = (n + 1) // 2
+
+    fig, axes = plt.subplots(nrows, ncols, figsize=(20, 9 * nrows))
+    # Normalise axes to a flat 2-D array for uniform indexing.
+    axes = np.array(axes).reshape(nrows, ncols)
+
+    for idx, (name, img) in enumerate(images):
+        r, c = divmod(idx, ncols)
+        axes[r, c].imshow(img)
+        axes[r, c].axis("off")
+
+    # Hide any unused cells in the last row.
+    for idx in range(n, nrows * ncols):
+        r, c = divmod(idx, ncols)
+        axes[r, c].axis("off")
+
+    fig.suptitle(
+        "Homography Synchronization: Iterative [1] vs. Spectral [2] vs. Tree",
+        fontsize=14,
+        y=1.01,
+    )
+    plt.tight_layout()
+    plt.savefig(save_path, dpi=150, bbox_inches="tight")
+    print(f"  Combined results saved to {save_path}")
+    plt.close(fig)
+
 
 if __name__ == "__main__":
-    main()
+    import argparse
+
+    parser = argparse.ArgumentParser(
+        description="Benchmark synchronization methods on synthetic and real data."
+    )
+    parser.add_argument(
+        "--from",
+        dest="start_from",
+        type=int,
+        default=1,
+        choices=range(1, 6),
+        metavar="N",
+        help="Start from experiment N (1–5). Skips all earlier experiments.",
+    )
+    args = parser.parse_args()
+    main(start_from=args.start_from)

@@ -36,9 +36,9 @@ from graph import Graph
 # ---------------------------------------------------------------------------
 # CONFIGURATION
 # ---------------------------------------------------------------------------
-MIN_MATCH_COUNT = 10      # Minimum inliers to accept a homography
-LOWE_RATIO      = 0.7     # Lowe's ratio test threshold (lower = stricter)
-RANSAC_THRESH   = 5.0     # RANSAC inlier pixel tolerance
+MIN_MATCH_COUNT = 10  # Minimum inliers to accept a homography
+LOWE_RATIO = 0.7  # Lowe's ratio test threshold (lower = stricter)
+RANSAC_THRESH = 5.0  # RANSAC inlier pixel tolerance
 
 
 # ---------------------------------------------------------------------------
@@ -64,7 +64,8 @@ _sift = cv.SIFT_create()
 # ---------------------------------------------------------------------------
 _matcher_gpu = (
     cv.cuda.DescriptorMatcher_createBFMatcher(cv.NORM_L2)
-    if CUDA_AVAILABLE else None
+    if CUDA_AVAILABLE
+    else None
 )
 _matcher_cpu = cv.BFMatcher(cv.NORM_L2) if not CUDA_AVAILABLE else None
 
@@ -72,6 +73,7 @@ _matcher_cpu = cv.BFMatcher(cv.NORM_L2) if not CUDA_AVAILABLE else None
 # ===================================================================
 # Feature extraction
 # ===================================================================
+
 
 def extract_features(img_gray: np.ndarray) -> Tuple[tuple, np.ndarray]:
     """
@@ -101,6 +103,7 @@ def extract_features(img_gray: np.ndarray) -> Tuple[tuple, np.ndarray]:
 # Descriptor matching
 # ===================================================================
 
+
 def match_descriptors(des1: np.ndarray, des2: np.ndarray):
     """
     Match two sets of SIFT descriptors using the GPU BFMatcher if
@@ -126,6 +129,7 @@ def match_descriptors(des1: np.ndarray, des2: np.ndarray):
 # ===================================================================
 # Pairwise homography from precomputed features
 # ===================================================================
+
 
 def compute_homography_from_features(
     kp1, des1, kp2, des2
@@ -183,6 +187,7 @@ def compute_homography_from_features(
 # Graph construction from real images
 # ===================================================================
 
+
 def create_graph_from_images(
     dataset_paths: List[str],
 ) -> Tuple[Graph, Dict, Dict]:
@@ -227,8 +232,10 @@ def create_graph_from_images(
             precomputed[i] = (None, None)
 
     total_pairs = n * (n - 1) // 2
-    print(f"[Step 2/2] Matching {total_pairs} pairs "
-          f"(GPU={'yes' if CUDA_AVAILABLE else 'no'})...")
+    print(
+        f"[Step 2/2] Matching {total_pairs} pairs "
+        f"(GPU={'yes' if CUDA_AVAILABLE else 'no'})..."
+    )
 
     # --- Pairwise matching (O(N²)) ---
     edges_found = 0
@@ -241,7 +248,9 @@ def create_graph_from_images(
             if des2 is None:
                 continue
 
-            M, pts1, pts2 = compute_homography_from_features(kp1, des1, kp2, des2)
+            M, pts1, pts2 = compute_homography_from_features(
+                kp1, des1, kp2, des2
+            )
 
             if M is not None:
                 # M maps image i → image j.
@@ -257,6 +266,7 @@ def create_graph_from_images(
 # ===================================================================
 # Reprojection error
 # ===================================================================
+
 
 def calculate_reprojection_error(graph: Graph, matches_data: Dict) -> float:
     """
@@ -312,6 +322,7 @@ def calculate_reprojection_error(graph: Graph, matches_data: Dict) -> float:
 # Mosaic creation
 # ===================================================================
 
+
 def create_mosaic(
     dataset_paths: List[str],
     graph: Graph,
@@ -366,7 +377,7 @@ def create_mosaic(
             continue
 
         H = X_ref @ np.linalg.inv(X_i)
-        H = H / H[2, 2]   # normalise so H[2,2] == 1
+        H = H / H[2, 2]  # normalise so H[2,2] == 1
         homographies[i] = H
 
         h, w = img.shape[:2]
@@ -379,16 +390,16 @@ def create_mosaic(
         max_y = max(max_y, wc[:, 0, 1].max())
 
     # Translation so that all coordinates are non-negative.
-    T = np.array([[1, 0, -min_x],
-                  [0, 1, -min_y],
-                  [0, 0,      1]])
+    T = np.array([[1, 0, -min_x], [0, 1, -min_y], [0, 0, 1]])
 
     canvas_w = int(np.ceil(max_x - min_x))
     canvas_h = int(np.ceil(max_y - min_y))
 
     if canvas_w > 15000 or canvas_h > 15000:
-        print(f"Canvas too large ({canvas_w}×{canvas_h}) "
-              "— synchronization likely diverged.")
+        print(
+            f"Canvas too large ({canvas_w}×{canvas_h}) "
+            "— synchronization likely diverged."
+        )
         return None
 
     # --- Pass 2: warp and composite ---
@@ -403,8 +414,9 @@ def create_mosaic(
         if CUDA_AVAILABLE:
             img_gpu = cv.cuda_GpuMat()
             img_gpu.upload(img)
-            warped_gpu = cv.cuda.warpPerspective(img_gpu, H_final,
-                                                  (canvas_w, canvas_h))
+            warped_gpu = cv.cuda.warpPerspective(
+                img_gpu, H_final, (canvas_w, canvas_h)
+            )
             warped = warped_gpu.download()
         else:
             warped = cv.warpPerspective(img, H_final, (canvas_w, canvas_h))
@@ -422,6 +434,7 @@ def create_mosaic(
 # Diagnostics
 # ===================================================================
 
+
 def diagnose_graph(
     dataset_paths: List[str],
     graph: Graph,
@@ -437,13 +450,15 @@ def diagnose_graph(
     total_pairs = n * (n - 1) // 2
     edges = len(matches_data)
 
-    print(f"\n{'='*50}")
+    print(f"\n{'=' * 50}")
     print("GRAPH DIAGNOSTICS")
-    print(f"{'='*50}")
+    print(f"{'=' * 50}")
     print(f"Images:        {n}")
     print(f"Total pairs:   {total_pairs}")
-    print(f"Edges found:   {edges} ({100*edges/total_pairs:.1f}% of pairs matched)")
-    print(f"{'='*50}")
+    print(
+        f"Edges found:   {edges} ({100 * edges / total_pairs:.1f}% of pairs matched)"
+    )
+    print(f"{'=' * 50}")
 
     print("\nFeatures per image:")
     for i, path in enumerate(dataset_paths):
@@ -466,7 +481,7 @@ def diagnose_graph(
             for j in ([b] if a == i else [a] if b == i else [])
         ]
         print(f"  [{i}] connects to: {neighbours if neighbours else 'NONE'}")
-    print(f"{'='*50}\n")
+    print(f"{'=' * 50}\n")
 
 
 # ===================================================================
@@ -480,30 +495,42 @@ if __name__ == "__main__":
         description="Image mosaicking via homography synchronization."
     )
     parser.add_argument(
-        "--dataset", type=str, default="Alcatraz_courtyard",
-        help="Name of the dataset folder (default: Alcatraz_courtyard)."
+        "--dataset",
+        type=str,
+        default="Alcatraz_courtyard",
+        help="Name of the dataset folder (default: Alcatraz_courtyard).",
     )
     parser.add_argument(
-        "--start", type=int, default=2313,
-        help="Starting image number (default: 2313)."
+        "--start",
+        type=int,
+        default=2313,
+        help="Starting image number (default: 2313).",
     )
     parser.add_argument(
-        "--count", type=int, default=20,
-        help="Number of images to use (default: 20)."
+        "--count",
+        type=int,
+        default=20,
+        help="Number of images to use (default: 20).",
     )
     parser.add_argument(
-        "--method", type=str, default="iterative",
+        "--method",
+        type=str,
+        default="iterative",
         choices=["iterative", "spectral_lsh", "spectral_gsh", "tree"],
-        help="Synchronization method (default: iterative)."
+        help="Synchronization method (default: iterative).",
     )
     parser.add_argument(
-        "--avg", type=str, default="sphere",
+        "--avg",
+        type=str,
+        default="sphere",
         choices=["euclidean", "direction", "sphere"],
-        help="Averaging method for the iterative approach (default: sphere)."
+        help="Averaging method for the iterative approach (default: sphere).",
     )
     parser.add_argument(
-        "--ref", type=int, default=0,
-        help="Reference image index for the mosaic (default: 0)."
+        "--ref",
+        type=int,
+        default=0,
+        help="Reference image index for the mosaic (default: 0).",
     )
     args = parser.parse_args()
 
@@ -513,10 +540,7 @@ if __name__ == "__main__":
     #     for i in range(args.start, args.start + args.count)
     # ]
 
-    dataset = [
-        f"compressed_images/IMG_{i}.jpg"
-        for i in range(4714, 4714 + 10)
-    ]
+    dataset = [f"compressed_images/IMG_{i}.jpg" for i in range(4714, 4714 + 10)]
 
     # 1. Build the homography graph from image features.
     g, point_matches, precomputed_features = create_graph_from_images(dataset)
