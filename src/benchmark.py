@@ -39,9 +39,6 @@ from typing import Dict, List, Tuple
 
 from graph import (
     Graph,
-    generate_random_sl3,
-    add_noise,
-    add_outlier_edge,
     calculate_angular_error,
     build_synthetic_graph,
     build_linear_graph,
@@ -64,8 +61,21 @@ np.random.seed(SEED)
 # synchronization in-place, and returns nothing.
 METHODS = {
     "Tree": lambda g: g.synchronize_tree(),
+    "Sphere": lambda g: g.synchronize_iterative(
+        avg_method="sphere", max_iters=100
+    ),
+    "Euclidean": lambda g: g.synchronize_iterative(
+        avg_method="euclidean", max_iters=100
+    ),
+    "Direction": lambda g: g.synchronize_iterative(
+        avg_method="direction", max_iters=100
+    ),
     "LSH": lambda g: g.synchronize_spectral(method="lsh"),
     "GSH": lambda g: g.synchronize_spectral(method="gsh"),
+}
+
+# Used only in experiment_vary_outliers (γ > 0).
+METHODS_IRLS = {
     "Sphere-IRLS": lambda g: g.synchronize_iterative(
         avg_method="sphere", max_iters=100, irls_iters=5, cauchy_scale=0.15
     ),
@@ -375,210 +385,67 @@ def experiment_vary_holes(
 
 
 # ===================================================================
-# Experiment 4: vary graph topology
+# Experiment 4: vary outlier density  (plain vs. IRLS)
 # ===================================================================
 
 
-# Each topology configuration specifies how to build the graph and
-# a human-readable label for display.
-TOPOLOGY_CONFIGS = [
-    {
-        "label": "Linear (bw=1)",
-        "topology": "linear",
-        "extra": {"bandwidth": 1},
-    },
-    {
-        "label": "Linear (bw=3)",
-        "topology": "linear",
-        "extra": {"bandwidth": 3},
-    },
-    {
-        "label": "Circular (chord=1)",
-        "topology": "circular",
-        "extra": {"chord_step": 1},
-    },
-    {
-        "label": "Circular (chord=3)",
-        "topology": "circular",
-        "extra": {"chord_step": 3},
-    },
-    {
-        "label": "Grid (4-conn)",
-        "topology": "grid",
-        "extra": {"diagonal_edges": False},
-    },
-    {
-        "label": "Grid (8-conn)",
-        "topology": "grid",
-        "extra": {"diagonal_edges": True},
-    },
-    {
-        "label": "Multilane (3 lanes)",
-        "topology": "multilane",
-        "extra": {"num_lanes": 3, "bandwidth": 3},
-    },
-    {
-        "label": "Random (Erdős–Rényi)",
-        "topology": "random",
-        "extra": {},
-    },
-]
-
-
-def _build_for_topology_config(
-    cfg: dict,
-    n: int,
-    sigma: float,
-    hole_density: float,
-    outlier_density: float,
-) -> Tuple[Graph, Dict[int, np.ndarray]]:
-    """
-    Internal helper: build a graph from a topology configuration dict.
-
-    Dispatches to the appropriate ``build_*`` function based on the
-    ``"topology"`` key, forwarding any extra keyword arguments from
-    ``cfg["extra"]``.
-    """
-    topo = cfg["topology"]
-    extra = cfg.get("extra", {})
-
-    if topo == "random":
-        return build_synthetic_graph(
-            n=n,
-            sigma=sigma,
-            hole_density=hole_density,
-            outlier_density=outlier_density,
-            **extra,
-        )
-    elif topo == "linear":
-        return build_linear_graph(
-            n=n,
-            sigma=sigma,
-            hole_density=hole_density,
-            outlier_density=outlier_density,
-            bandwidth=extra.get("bandwidth", 1),
-        )
-    elif topo == "circular":
-        return build_circular_graph(
-            n=n,
-            sigma=sigma,
-            hole_density=hole_density,
-            outlier_density=outlier_density,
-            chord_step=extra.get("chord_step", 1),
-        )
-    elif topo == "grid":
-        cols = int(np.ceil(np.sqrt(n)))
-        rows = int(np.ceil(n / cols))
-        return build_grid_graph(
-            rows=rows,
-            cols=cols,
-            sigma=sigma,
-            hole_density=hole_density,
-            outlier_density=outlier_density,
-            diagonal_edges=extra.get("diagonal_edges", False),
-        )
-    elif topo == "multilane":
-        graph, gt, _ = build_multilane_graph(
-            n=n,
-            sigma=sigma,
-            hole_density=hole_density,
-            outlier_density=outlier_density,
-            num_lanes=extra.get("num_lanes", 3),
-            bandwidth=extra.get("bandwidth", 1),
-            cross_connect=True,
-            diagonal_cross_density=0.15,
-        )
-        return graph, gt
-    else:
-        raise ValueError(f"Unknown topology '{topo}'.")
-
-
-def experiment_vary_topology(
-    n: int = 36,
-    sigma: float = 0.05,
-    hole_density: float = 0.2,
-    outlier_density: float = 0.0,
+def experiment_vary_outliers(
+    outlier_densities: List[float],
+    n: int = 25,
+    sigma: float = 0.0,
+    hole_density: float = 0.5,
     n_trials: int = 20,
-    configs: List[dict] = None,
-) -> Tuple[Dict[str, Dict[str, float]], Dict[str, Dict[str, float]]]:
+    topology: str = "random",
+) -> Tuple[Dict[str, List[float]], Dict[str, List[float]]]:
     """
-    Experiment 4: compare all methods across different graph topologies.
+    Experiment 4: vary the outlier density, comparing plain iterative
+    methods against their IRLS counterparts.
 
-    For each topology configuration, runs ``n_trials`` independent trials
-    and reports the median angular error and execution time per method.
-
-    Parameters
-    ----------
-    n : int
-        Number of nodes (36 gives a nice 6×6 grid and clean lane splits).
-    sigma : float
-        Noise standard deviation.
-    hole_density : float
-        Fraction of removable edges to drop.
-    outlier_density : float
-        Fraction of remaining edges replaced by outliers.
-    n_trials : int
-        Number of independent trials per configuration.
-    configs : list of dict, optional
-        Custom topology configurations.  Defaults to ``TOPOLOGY_CONFIGS``.
-
-    Returns
-    -------
-    error_results : dict[topology_label → dict[method_label → median_error]]
-    time_results  : dict[topology_label → dict[method_label → median_time]]
+    Mirrors Fig. 4 (right) of [1]: no noise (σ=0) so the only source of
+    error is the fraction of edges replaced by random homographies.  Both
+    plain methods and their IRLS variants are run side by side.
     """
-    if configs is None:
-        configs = TOPOLOGY_CONFIGS
+    all_methods = {**METHODS, **METHODS_IRLS}
 
     print("\n" + "=" * 60)
-    print("EXPERIMENT 4: Varying graph topology")
+    print("EXPERIMENT 4: Varying outlier density (plain vs. IRLS)")
     print(
-        f"  n={n}, σ={sigma}, ρ={hole_density}, "
-        f"γ={outlier_density}, trials={n_trials}"
+        f"  topology={topology}, n={n}, σ={sigma}, ρ={hole_density}, "
+        f"trials={n_trials}"
     )
     print("=" * 60)
 
-    error_results: Dict[str, Dict[str, float]] = {}
-    time_results: Dict[str, Dict[str, float]] = {}
+    error_results = {label: [] for label in all_methods}
+    time_results = {label: [] for label in all_methods}
 
-    for cfg in configs:
-        topo_label = cfg["label"]
-        trial_errors = {label: [] for label in METHODS}
-        trial_times = {label: [] for label in METHODS}
+    for gamma in outlier_densities:
+        trial_errors = {label: [] for label in all_methods}
+        trial_times = {label: [] for label in all_methods}
 
         for _ in range(n_trials):
-            base_graph, ground_truth = _build_for_topology_config(
-                cfg,
+            errs, tms = run_single_trial(
                 n=n,
                 sigma=sigma,
                 hole_density=hole_density,
-                outlier_density=outlier_density,
+                outlier_density=gamma,
+                methods=all_methods,
+                topology=topology,
             )
+            for label in all_methods:
+                trial_errors[label].append(errs[label])
+                trial_times[label].append(tms[label])
 
-            for method_label, sync_fn in METHODS.items():
-                g = base_graph.copy()
-                g.normalize()
+        for label in all_methods:
+            error_results[label].append(np.median(trial_errors[label]))
+            time_results[label].append(np.median(trial_times[label]))
 
-                t0 = time.perf_counter()
-                sync_fn(g)
-                elapsed = time.perf_counter() - t0
-
-                err = calculate_angular_error(g, ground_truth)
-                trial_errors[method_label].append(err)
-                trial_times[method_label].append(elapsed)
-
-        # Collect medians.
-        error_results[topo_label] = {
-            m: np.median(trial_errors[m]) for m in METHODS
-        }
-        time_results[topo_label] = {
-            m: np.median(trial_times[m]) for m in METHODS
-        }
-
-        row = " | ".join(
-            f"{m}: {error_results[topo_label][m]:.2f}°" for m in METHODS
+        print(
+            f"  γ={gamma:.2f} | "
+            + " | ".join(
+                f"{label}: {error_results[label][-1]:.2f}°"
+                for label in all_methods
+            )
         )
-        print(f"  {topo_label:25s} | {row}")
 
     return error_results, time_results
 
@@ -650,12 +517,16 @@ def experiment_real_data(
 
 # Visual style for each method family.
 STYLE = {
-    "Tree":           {"color": "black",  "marker": "s", "linestyle": "--"},
-    "LSH":            {"color": "purple", "marker": "D", "linestyle": "-."},
-    "GSH":            {"color": "orange", "marker": "x", "linestyle": "-."},
-    "Sphere-IRLS":    {"color": "red",    "marker": "o", "linestyle": "-"},
-    "Euclidean-IRLS": {"color": "blue",   "marker": "^", "linestyle": "-"},
-    "Direction-IRLS": {"color": "green",  "marker": "v", "linestyle": "-"},
+    "Tree": {"color": "black", "marker": "s", "linestyle": "--"},
+    "Sphere": {"color": "red", "marker": "o", "linestyle": "-"},
+    "Euclidean": {"color": "blue", "marker": "^", "linestyle": "-"},
+    "Direction": {"color": "green", "marker": "v", "linestyle": "-"},
+    "LSH": {"color": "purple", "marker": "D", "linestyle": "-."},
+    "GSH": {"color": "orange", "marker": "x", "linestyle": "-."},
+    # IRLS variants share colour with their plain counterpart; dotted distinguishes them.
+    "Sphere-IRLS": {"color": "red", "marker": "o", "linestyle": ":"},
+    "Euclidean-IRLS": {"color": "blue", "marker": "^", "linestyle": ":"},
+    "Direction-IRLS": {"color": "green", "marker": "v", "linestyle": ":"},
 }
 
 
@@ -692,69 +563,6 @@ def plot_results(
     ax2.set_title(f"{title} — Execution time")
     ax2.legend()
     ax2.grid(True, linestyle="--", alpha=0.5)
-
-    plt.tight_layout()
-    if save_path:
-        plt.savefig(save_path, dpi=150, bbox_inches="tight")
-        print(f"  Plot saved to {save_path}")
-    plt.show()
-
-
-def plot_topology_results(
-    error_data: Dict[str, Dict[str, float]],
-    time_data: Dict[str, Dict[str, float]],
-    title: str = "Topology comparison",
-    save_path: str = None,
-) -> None:
-    """
-    Plot experiment 4 results as grouped bar charts.
-
-    One bar group per topology, one bar per method.
-    Left subplot: error.  Right subplot: execution time.
-    """
-    topo_labels = list(error_data.keys())
-    method_labels = list(METHODS.keys())
-    n_topos = len(topo_labels)
-    n_methods = len(method_labels)
-
-    x = np.arange(n_topos)
-    bar_width = 0.8 / n_methods
-
-    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(16, 6))
-
-    for i, method in enumerate(method_labels):
-        errors = [error_data[t][method] for t in topo_labels]
-        times = [time_data[t][method] for t in topo_labels]
-        color = STYLE.get(method, {}).get("color", "gray")
-
-        ax1.bar(
-            x + i * bar_width,
-            errors,
-            bar_width,
-            label=method,
-            color=color,
-            alpha=0.85,
-        )
-        ax2.bar(
-            x + i * bar_width,
-            times,
-            bar_width,
-            label=method,
-            color=color,
-            alpha=0.85,
-        )
-
-    for ax, ylabel, subtitle in [
-        (ax1, "Error (degrees)", "Error"),
-        (ax2, "Time (seconds)", "Execution time"),
-    ]:
-        ax.set_xlabel("Topology")
-        ax.set_ylabel(ylabel)
-        ax.set_title(f"{title} — {subtitle}")
-        ax.set_xticks(x + bar_width * (n_methods - 1) / 2)
-        ax.set_xticklabels(topo_labels, rotation=30, ha="right", fontsize=8)
-        ax.legend(fontsize=7)
-        ax.grid(True, axis="y", linestyle="--", alpha=0.4)
 
     plt.tight_layout()
     if save_path:
@@ -821,7 +629,7 @@ def main(start_from: int = 1):
       • Experiment 1: n ∈ {10, 20, 30, 50, 75, 100}, σ=0.05, ρ=0.5
       • Experiment 2: σ ∈ [0.01, 0.15], n=25, ρ=0.5
       • Experiment 3: ρ ∈ [0.0, 0.9], n=25, σ=0.05
-      • Experiment 4: topology ∈ {linear, circular, grid, multilane, random}
+      • Experiment 4: γ ∈ [0.0, 0.6], n=25, σ=0.0, ρ=0.5 (plain vs. IRLS)
       • Experiment 5: real image data (reprojection error)
     """
     N_TRIALS = 50
@@ -870,30 +678,37 @@ def main(start_from: int = 1):
             save_path="exp3_vary_holes.png",
         )
 
-    # ---- Experiment 4: varying topology ----
-    # if start_from <= 4:
-    #     err4, time4 = experiment_vary_topology(
-    #         n=36, sigma=0.2, hole_density=0.2, n_trials=N_TRIALS
-    #     )
-    #     plot_topology_results(
-    #         err4,
-    #         time4,
-    #         title="Topology comparison",
-    #         save_path="exp4_vary_topology.png",
-    #     )
-    #
-    # # ---- Experiment 5: real image data ----
-    # if start_from <= 5:
-    #     dataset = [
-    #         f"compressed_images/IMG_{i}.jpg" for i in range(4714, 4714 + 10)
-    #     ]
-    #     err5, time5 = experiment_real_data(dataset)
-    #     plot_real_data_results(
-    #         err5,
-    #         time5,
-    #         title="Real image data benchmark",
-    #         save_path="exp5_real_data.png",
-    #     )
+    # ---- Experiment 4: varying outlier density ----
+    if start_from <= 4:
+        outlier_densities = [0.0, 0.05, 0.1, 0.2, 0.3, 0.4, 0.5, 0.6]
+        err4, time4 = experiment_vary_outliers(
+            outlier_densities,
+            n=25,
+            sigma=0.0,
+            hole_density=0.5,
+            n_trials=N_TRIALS,
+        )
+        plot_results(
+            outlier_densities,
+            err4,
+            time4,
+            xlabel="Outlier Density γ",
+            title="Varying outlier density (plain vs. IRLS)",
+            save_path="exp4_vary_outliers.png",
+        )
+
+    # ---- Experiment 5: real image data ----
+    if start_from <= 5:
+        dataset = [
+            f"compressed_images/IMG_{i}.jpg" for i in range(4714, 4714 + 10)
+        ]
+        err5, time5 = experiment_real_data(dataset)
+        plot_real_data_results(
+            err5,
+            time5,
+            title="Real image data benchmark",
+            save_path="exp5_real_data.png",
+        )
 
     # ---- Summary ----
     print("\n" + "=" * 60)
@@ -953,7 +768,7 @@ def save_combined_results(
         "exp1_vary_nodes.png",
         "exp2_vary_noise.png",
         "exp3_vary_holes.png",
-        "exp4_vary_topology.png",
+        "exp4_vary_outliers.png",
         "exp5_real_data.png",
     ]
     images = [

@@ -45,31 +45,26 @@ from graph import (
 )
 
 # ---------------------------------------------------------------------------
-# Synchronization methods (identical registry to benchmark.py)
+# Synchronization methods — plain only (outlier_density=0 throughout, so IRLS
+# is not needed and would be wasted computation).
 # ---------------------------------------------------------------------------
 
 METHODS: Dict[str, callable] = {
     "Tree": lambda g: g.synchronize_tree(),
+    "Sphere": lambda g: g.synchronize_iterative(avg_method="sphere", max_iters=100),
+    "Euclidean": lambda g: g.synchronize_iterative(avg_method="euclidean", max_iters=100),
+    "Direction": lambda g: g.synchronize_iterative(avg_method="direction", max_iters=100),
     "LSH": lambda g: g.synchronize_spectral(method="lsh"),
     "GSH": lambda g: g.synchronize_spectral(method="gsh"),
-    "Sphere-IRLS": lambda g: g.synchronize_iterative(
-        avg_method="sphere", max_iters=100, irls_iters=5, cauchy_scale=0.15
-    ),
-    "Euclidean-IRLS": lambda g: g.synchronize_iterative(
-        avg_method="euclidean", max_iters=100, irls_iters=5, cauchy_scale=0.15
-    ),
-    "Direction-IRLS": lambda g: g.synchronize_iterative(
-        avg_method="direction", max_iters=100, irls_iters=5, cauchy_scale=0.15
-    ),
 }
 
 STYLE: Dict[str, dict] = {
-    "Tree":           {"color": "black",  "marker": "s", "linestyle": "--"},
-    "LSH":            {"color": "purple", "marker": "D", "linestyle": "-."},
-    "GSH":            {"color": "orange", "marker": "x", "linestyle": "-."},
-    "Sphere-IRLS":    {"color": "red",    "marker": "o", "linestyle": "-"},
-    "Euclidean-IRLS": {"color": "blue",   "marker": "^", "linestyle": "-"},
-    "Direction-IRLS": {"color": "green",  "marker": "v", "linestyle": "-"},
+    "Tree":      {"color": "black",  "marker": "s", "linestyle": "--"},
+    "Sphere":    {"color": "red",    "marker": "o", "linestyle": "-"},
+    "Euclidean": {"color": "blue",   "marker": "^", "linestyle": "-"},
+    "Direction": {"color": "green",  "marker": "v", "linestyle": "-"},
+    "LSH":       {"color": "purple", "marker": "D", "linestyle": "-."},
+    "GSH":       {"color": "orange", "marker": "x", "linestyle": "-."},
 }
 
 # ---------------------------------------------------------------------------
