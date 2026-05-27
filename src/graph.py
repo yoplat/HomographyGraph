@@ -84,8 +84,6 @@ class Graph:
             "euclidean": self._averaging_euclidean,
             "direction": self._averaging_direction,
             "sphere": self._averaging_sphere,
-            # "lie" NON è qui: il suo update richiede X_i^{old} come argomento
-            # extra — firma incompatibile. Usa synchronize_lie() direttamente.
         }
 
     # ======================================================================
@@ -263,61 +261,66 @@ class Graph:
     # ======================================================================
     # Lie-algebraic helpers  (SL(3) ↔ sl(3))
     # ======================================================================
-
     @staticmethod
     def _sl3_log(H: np.ndarray) -> np.ndarray:
         """
-        Matrix logarithm of H ∈ SL(3), proiettato su sl(3).
+        Matrix logarithm of H ∈ SL(3), projected onto sl(3).
 
-        scipy.linalg.logm calcola il logaritmo principale via Schur.
-        La proiezione su sl(3) rimuove la traccia residua numerica:
+        scipy.linalg.logm computes the principal matrix logarithm via Schur decomposition.
+        The projection onto sl(3) removes residual numerical trace:
 
             log_sl3(H) = logm(H) − (tr(logm(H)) / 3) · I
 
         Raises
         ------
         ValueError
-            Se la parte immaginaria è non-trascurabile (autovalori reali
-            negativi → logaritmo reale non esiste). Il chiamante skippa
-            quel vicino.
+            If a significant imaginary part is present (typically caused by
+            negative real eigenvalues → no real logarithm exists).
+            The caller is expected to skip such neighbors.
         """
         with warnings.catch_warnings():
             warnings.simplefilter("ignore")
             L = logm(H)
 
+        # Reject if the imaginary component is not negligible
         if np.iscomplexobj(L) and np.max(np.abs(L.imag)) > 1e-6:
             raise ValueError(
-                "_sl3_log: logaritmo complesso — H ha autovalori reali negativi"
+                "_sl3_log: complex logarithm — H has negative real eigenvalues"
             )
 
         L = L.real
-        if not np.all(np.isfinite(L)):
-            raise ValueError("_sl3_log: logm non-finite")
 
+        # Ensure numerical validity
+        if not np.all(np.isfinite(L)):
+            raise ValueError("_sl3_log: logm returned non-finite values")
+
+        # Project onto sl(3) by removing the trace
         L -= (np.trace(L) / 3.0) * np.eye(3)
         return L
+
 
     @staticmethod
     def _sl3_log_robust(H: np.ndarray, max_sqrt: int = 8) -> np.ndarray:
         """
-        Logaritmo matriciale robusto per H ∈ SL(3) via repeated square roots.
+        Robust matrix logarithm for H ∈ SL(3) using repeated square roots.
 
-        Quando H è lontano da I (omografie grandi), logm può produrre
-        risultati complessi o imprecisi. Questo metodo riduce H a un
-        intorno di I calcolando k radici quadrate successive:
+        When H is far from the identity (large homographies), logm may produce
+        complex or inaccurate results. This method reduces H to a neighborhood
+        of the identity by iteratively taking matrix square roots:
 
-            H̃ = H^{1/2^k}   con k scelto finché ||H̃ − I||_F < 0.5
+            H_tilde = H^(1 / 2^k)   where k is chosen such that ||H_tilde - I||_F < 0.5
 
-        poi applica logm a H̃ (ora vicino a I) e scala il risultato:
+        Then applies logm to H_tilde and rescales:
 
-            log(H) ≈ 2^k · log(H̃)
+            log(H) ≈ 2^k · log(H_tilde)
 
-        Valido esattamente quando H commuta col suo log (sempre vero per
-        SL(3) diagonalizzabile); approssimazione eccellente vicino a I.
+        This is exact when H commutes with its logarithm (true if diagonalizable),
+        and highly accurate near the identity.
         """
         scale = 1
         Hk = H.copy()
 
+        # Iteratively bring H closer to identity
         for _ in range(max_sqrt):
             if np.linalg.norm(Hk - np.eye(3), "fro") < 0.5:
                 break
@@ -327,50 +330,58 @@ class Graph:
                 Hk_next = sqrtm(Hk).real
 
             if not np.all(np.isfinite(Hk_next)):
-                raise ValueError("_sl3_log_robust: sqrtm non-finite")
+                raise ValueError("_sl3_log_robust: sqrtm returned non-finite values")
 
             Hk = Hk_next
             scale *= 2
 
+        # Compute logarithm on the stabilized matrix
         with warnings.catch_warnings():
             warnings.simplefilter("ignore")
             L = logm(Hk)
 
+        # Check for residual complex part
         if np.iscomplexobj(L) and np.max(np.abs(L.imag)) > 1e-5:
-            raise ValueError("_sl3_log_robust: ancora complesso dopo sqrt")
+            raise ValueError("_sl3_log_robust: still complex after sqrt iterations")
 
+        # Rescale back
         L = L.real * scale
 
         if not np.all(np.isfinite(L)):
-            raise ValueError("_sl3_log_robust: logm non-finite")
+            raise ValueError("_sl3_log_robust: logm returned non-finite values")
 
+        # Project onto sl(3)
         L -= (np.trace(L) / 3.0) * np.eye(3)
         return L
+
 
     @staticmethod
     def _sl3_exp(V: np.ndarray) -> np.ndarray:
         """
-        Esponenziale matriciale di V ∈ sl(3), normalizzato a SL(3).
+        Matrix exponential of V ∈ sl(3), normalized to SL(3).
 
-        scipy.linalg.expm è usato per stabilità numerica. La normalizzazione
-        (dividi per cbrt(det)) corregge il drift det ≠ 1 dovuto all'aritmetica
-        in virgola mobile, anche per input a traccia nulla.
+        scipy.linalg.expm is used for numerical stability. The normalization
+        (division by cbrt(det)) corrects small drift where det ≠ 1 due to
+        floating-point arithmetic, even if V has zero trace.
         """
         with warnings.catch_warnings():
             warnings.simplefilter("ignore")
             H = expm(V)
 
         if not np.all(np.isfinite(H)):
-            raise ValueError("_sl3_exp: expm non-finite")
+            raise ValueError("_sl3_exp: expm returned non-finite values")
 
+        # Compute determinant safely
         with np.errstate(over="ignore", invalid="ignore", divide="ignore"):
             det = np.linalg.det(H)
 
         if det == 0 or not np.isfinite(det):
-            raise ValueError("_sl3_exp: degenerate det")
+            raise ValueError("_sl3_exp: degenerate determinant")
 
+        # Normalize to enforce det(H) = 1
         H /= np.cbrt(det)
         return H
+
 
     @staticmethod
     def _lie_update_single(
@@ -380,34 +391,35 @@ class Graph:
         robust: bool = True,
     ) -> np.ndarray:
         """
-        Singolo update Riemanniano sul manifold SL(3).
+        Single Riemannian update step on the SL(3) manifold.
 
-        Implementa la media intrinseca:
+        Implements the intrinsic mean update:
 
             X_i^{new} = X_i · exp( Σ_k w_k · log(X_i^{-1} · X_{i|k}) / Σ w_k )
 
-        dove log/exp sono le operazioni di gruppo su SL(3).
+        where log/exp are group operations on SL(3).
 
-        Rispetto alla sphere-averaging estrinseca, questo metodo:
-        • rispetta la curvatura di SL(3) — la media è sulla geodetica vera
-        • non richiede normalizzazione a posteriori (rimane su SL(3) per costruzione)
-        • converge più velocemente quando le omografie sono lontane dall'identità
+        Compared to extrinsic (Euclidean/sphere) averaging:
+        - Respects the curvature of SL(3): averaging happens along true geodesics
+        - No post-normalization needed (remains in SL(3) by construction)
+        - Converges faster when homographies are far from identity
 
-        Vicini il cui logaritmo è indefinito vengono silenziosamente skippati.
-        Se tutti i vicini falliscono, X_i viene restituito invariato.
+        Neighbors whose logarithm is undefined are silently skipped.
+        If all neighbors fail, X_i is returned unchanged.
 
         Parameters
         ----------
-        X_i      : omografia assoluta corrente per il nodo i (3×3, det ≈ 1)
-        estimates: stime dai vicini  X_{i|k} = Z_{ik} · X_k
-        weights  : pesi IRLS per stima. Uniformi se None.
-        robust   : se True usa _sl3_log_robust (sqrtm iterativo), altrimenti
-                _sl3_log diretto. Raccomandato True per grafo a freddo.
+        X_i       : Current absolute homography for node i (3×3, det ≈ 1)
+        estimates : Neighbor estimates X_{i|k} = Z_{ik} · X_k
+        weights   : IRLS weights per estimate. Uniform if None.
+        robust    : If True uses _sl3_log_robust (iterative sqrt), otherwise
+                    uses direct _sl3_log. Recommended True for cold starts.
         """
         K = len(estimates)
         w = np.ones(K) if weights is None else np.asarray(weights, dtype=float)
         log_fn = Graph._sl3_log_robust if robust else Graph._sl3_log
 
+        # Compute inverse of current estimate
         try:
             X_i_inv = np.linalg.inv(X_i)
         except np.linalg.LinAlgError:
@@ -416,6 +428,7 @@ class Graph:
         tangent_sum = np.zeros((3, 3))
         valid_w = 0.0
 
+        # Accumulate weighted tangent vectors
         for wk, Xk_est in zip(w, estimates):
             try:
                 delta = log_fn(X_i_inv @ Xk_est)
@@ -424,11 +437,13 @@ class Graph:
             except (ValueError, np.linalg.LinAlgError):
                 continue
 
+        # If no valid neighbors, keep current estimate
         if valid_w == 0.0:
             return X_i
 
         mean_tangent = tangent_sum / valid_w
 
+        # Apply exponential map update
         try:
             return Graph._norm_matrix(X_i @ Graph._sl3_exp(mean_tangent))
         except (ValueError, np.linalg.LinAlgError):
@@ -630,61 +645,67 @@ class Graph:
         robust_log: bool = True,
     ) -> None:
         """
-        Sincronizzazione iterativa Riemanniana su SL(3).
+        Iterative Riemannian synchronization on SL(3).
 
-        Motivazione
+        Motivation
+        ----------
+        ``synchronize_iterative`` works in the ambient Euclidean space R^9
+        (an extrinsic approach): it treats each homography as a 9D vector,
+        computes a weighted average on the unit sphere in R^9, and then
+        re-normalizes back to SL(3). This ignores the curved geometry of SL(3).
+
+        This method is intrinsic: it uses the Lie group structure of SL(3)
+        and its Lie algebra sl(3) (the space of 3x3 traceless matrices).
+        The update for each node i is:
+
+            X_i^{new} = X_i · exp( (1 / Σ w_j) · Σ_j w_j · log(X_i^{-1} · Z_ij · X_j) )
+
+        where log/exp are the matrix logarithm and exponential on SL(3).
+
+        Advantages over sphere-based averaging
+        --------------------------------------
+        - Faster convergence when homographies are large (far from identity)
+        - More accurate final solution in high-noise settings
+        - Each update stays on SL(3) by construction (no post-hoc normalization)
+
+        Limitations
         -----------
-        ``synchronize_iterative`` opera nello spazio *ambiente* R^9 (approccio
-        estrinseco): tratta ogni omografia come un 9-vettore, calcola la media
-        pesata sulla sfera unitaria in R^9, poi ri-normalizza a SL(3).
-        Questo ignora la geometria curva di SL(3).
+        - Roughly 3x to 5x slower per sweep, since logm is relatively expensive
+        - If robust_log=False, the logarithm may fail for matrices with
+        negative eigenvalues; those neighbors are skipped in that iteration
 
-        Questo metodo è *intrinseco*: usa la struttura di gruppo di Lie di SL(3)
-        e la sua algebra di Lie sl(3) (matrici 3×3 a traccia nulla).
-        L'update per ogni nodo i è:
-
-            X_i^{new} = X_i · exp( (1/Σwⱼ) · Σⱼ wⱼ · log(X_i^{-1} · Zᵢⱼ Xⱼ) )
-
-        dove log/exp sono il logaritmo/esponenziale matriciale su SL(3).
-
-        Vantaggi rispetto a sphere
-        --------------------------
-        • Converge più velocemente quando le omografie sono grandi (lontane da I)
-        • Soluzione finale più accurata in regime ad alto rumore
-        • L'update resta su SL(3) per costruzione (no normalizzazione post-hoc)
-
-        Limitazioni
-        -----------
-        • ~3–5× più lento per sweep (logm via decomposizione di Schur)
-        • Con robust_log=False, il log può fallire per H con autovalori negativi
-        (i vicini affetti vengono skippati quell'iterazione)
-
-        Uso consigliato
-        ---------------
-        Per ottenere il massimo beneficio, inizializza prima con synchronize_tree()
-        o con poche iterazioni di synchronize_iterative(), poi raffina con questo:
+        Recommended usage
+        -----------------
+        To get the most benefit, initialize first with synchronize_tree()
+        or with a few iterations of synchronize_iterative(), then refine
+        with this method:
 
             g.synchronize_tree()
             g.synchronize_lie(max_iters=100)
 
         Parameters
         ----------
-        max_iters    : sweep massimi per round IRLS
-        tol          : soglia convergenza: max |X_new − X_old| entry-wise
-        gauss_seidel : True = Gauss-Seidel (update immediato);
-                    False = Jacobi (default, consistente col paper originale)
-        irls_iters   : round IRLS outer (0 = nessun outlier weighting)
-        cauchy_scale : scala Cauchy per IRLS in radianti (tipico: 0.05–0.3)
-        robust_log   : True = usa _sl3_log_robust (sqrtm iterativo, più stabile);
-                    False = usa _sl3_log diretto (più veloce, meno robusto)
+        max_iters    : Maximum number of sweeps for each IRLS round
+        tol          : Convergence threshold on max entry-wise update magnitude
+        gauss_seidel : If True, update vertices immediately (Gauss-Seidel);
+                    otherwise use Jacobi updates (default, consistent with
+                    the original paper)
+        irls_iters   : Number of outer IRLS rounds (0 = no outlier reweighting)
+        cauchy_scale : Cauchy scale for IRLS, in radians (typical: 0.05-0.3)
+        robust_log   : If True, use _sl3_log_robust (iterative sqrt, more stable);
+                    otherwise use direct _sl3_log (faster, less robust)
         """
+        # Process vertices in degree-based order
         sorted_verts = self._sorted_vertices_by_degree()
 
+        # Initialize one scalar weight per undirected edge
         edge_weights: Dict[Tuple[int, int], float] = {
             (min(i, j), max(i, j)): 1.0 for i, j in self.edges if i < j
         }
 
+        # Outer IRLS loop: each round recomputes robust edge weights
         for _outer in range(irls_iters + 1):
+            # Inner synchronization loop
             for _ in range(max_iters):
                 max_change = 0.0
                 new_vertices: Dict[int, np.ndarray] = {}
@@ -694,35 +715,45 @@ class Graph:
                     if not neighbours:
                         continue
 
-                    # Stime dai vicini: X_{i|j} = Z_{ij} · X_j
+                    # Neighbor-induced estimates:
+                    # X_{i|j} = Z_ij @ X_j
                     estimates = [
                         self.edges[(i, j)] @ self.vertices[j]
                         for j in neighbours
                     ]
+
+                    # Collect the current robust weights for the adjacent edges
                     w = np.array(
                         [edge_weights[(min(i, j), max(i, j))] for j in neighbours]
                     )
 
+                    # Perform one intrinsic Lie-group update for node i
                     x_new = self._lie_update_single(
                         self.vertices[i], estimates, w, robust=robust_log
                     )
 
+                    # Track the largest entry-wise change for convergence
                     max_change = max(
                         max_change,
                         np.max(np.abs(x_new - self.vertices[i]))
                     )
 
                     if gauss_seidel:
+                        # Immediate in-place update
                         self.vertices[i] = x_new
                     else:
+                        # Store for Jacobi-style batch update
                         new_vertices[i] = x_new
 
+                # Apply all deferred updates together in Jacobi mode
                 if not gauss_seidel:
                     self.vertices.update(new_vertices)
 
+                # Stop if the sweep produced only a very small change
                 if max_change < tol:
                     break
 
+            # Recompute robust IRLS weights, except after the last outer round
             if _outer < irls_iters:
                 edge_weights = self._compute_irls_weights(cauchy_scale)
 
