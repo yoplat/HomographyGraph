@@ -532,6 +532,20 @@ if __name__ == "__main__":
         default=0,
         help="Reference image index for the mosaic (default: 0).",
     )
+    parser.add_argument(
+        "--irls",
+        type=int,
+        default=5,
+        metavar="N",
+        help="IRLS outer iterations for the iterative method (0=off, default: 5).",
+    )
+    parser.add_argument(
+        "--cauchy-scale",
+        type=float,
+        default=0.2,
+        metavar="C",
+        help="Cauchy inlier threshold in radians (default: 0.2).",
+    )
     args = parser.parse_args()
 
     # Build image paths.
@@ -553,8 +567,13 @@ if __name__ == "__main__":
 
     # 3. Synchronize using the selected method.
     if args.method == "iterative":
-        print(f"\n[Sync] Running iterative synchronization (avg={args.avg})...")
-        g.synchronize_iterative(avg_method=args.avg, max_iters=100)
+        print(f"\n[Sync] Running iterative synchronization (avg={args.avg}, irls={args.irls})...")
+        g.synchronize_iterative(
+            avg_method=args.avg,
+            max_iters=100,
+            irls_iters=args.irls,
+            cauchy_scale=args.cauchy_scale,
+        )
     elif args.method == "spectral_lsh":
         print("\n[Sync] Running spectral synchronization (LSH)...")
         g.synchronize_spectral(method="lsh")
