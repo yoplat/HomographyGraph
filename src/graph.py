@@ -327,13 +327,30 @@ class Graph:
 
             with warnings.catch_warnings():
                 warnings.simplefilter("ignore")
-                Hk_next = sqrtm(Hk).real
+                Hk_next_c = sqrtm(Hk)
+
+            if np.iscomplexobj(Hk_next_c) and np.max(np.abs(Hk_next_c.imag)) > 1e-6:
+                raise ValueError(
+                    "_sl3_log_robust: sqrtm returned significant imaginary part "
+                    "— H has no real square root at this stage"
+                )
+            Hk_next = Hk_next_c.real
 
             if not np.all(np.isfinite(Hk_next)):
                 raise ValueError("_sl3_log_robust: sqrtm returned non-finite values")
 
             Hk = Hk_next
             scale *= 2
+
+        # Guard against the loop exhausting all iterations without converging.
+        # If Hk is still far from I, logm will be inaccurate — raise rather
+        # than silently return a wrong result.
+        if np.linalg.norm(Hk - np.eye(3), "fro") >= 0.5:
+            raise ValueError(
+                f"_sl3_log_robust: matrix did not converge to identity neighborhood "
+                f"after {max_sqrt} square roots "
+                f"(‖Hk − I‖_F = {np.linalg.norm(Hk - np.eye(3), 'fro'):.4f})"
+            )
 
         # Compute logarithm on the stabilized matrix
         with warnings.catch_warnings():
