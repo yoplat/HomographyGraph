@@ -278,20 +278,17 @@ class Graph:
 
     def _edge_residual(self, i: int, j: int) -> float:
         """
-        Angular residual (radians) between the measured Z_ij and the
-        currently estimated X_i · X_j^{-1}.
+        Angular residual (radians) for edge (i, j).
 
-        This is the per-edge analogue of ``calculate_angular_error``:
-        both vectors are flattened to R^9 and normalised before the dot
-        product, and the absolute value handles the sign ambiguity of
-        projective representations.
+        The noiseless condition Z_ij · X_j = X_i is equivalent to
+        Z_ij = X_i · X_j^{-1}, but avoids inverting X_j (which can be
+        singular when vertices haven't fully converged).  We measure the
+        angle in R^9 between vec(Z_ij · X_j) and vec(X_i).
         """
-        Z_ij = self.edges[(i, j)]
-        pred = self.vertices[i] @ np.linalg.inv(self.vertices[j])
-        v1 = Z_ij.flatten()
-        v1 = v1 / np.linalg.norm(v1)
-        v2 = pred.flatten()
-        v2 = v2 / np.linalg.norm(v2)
+        lhs = self.edges[(i, j)] @ self.vertices[j]
+        rhs = self.vertices[i]
+        v1 = lhs.flatten();  v1 = v1 / np.linalg.norm(v1)
+        v2 = rhs.flatten();  v2 = v2 / np.linalg.norm(v2)
         return float(np.arccos(np.clip(np.abs(np.dot(v1, v2)), 0.0, 1.0)))
 
     def _compute_irls_weights(
