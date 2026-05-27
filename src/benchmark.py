@@ -64,20 +64,8 @@ np.random.seed(SEED)
 # synchronization in-place, and returns nothing.
 METHODS = {
     "Tree": lambda g: g.synchronize_tree(),
-    "Sphere": lambda g: g.synchronize_iterative(
-        avg_method="sphere", max_iters=100
-    ),
-    "Euclidean": lambda g: g.synchronize_iterative(
-        avg_method="euclidean", max_iters=100
-    ),
-    "Direction": lambda g: g.synchronize_iterative(
-        avg_method="direction", max_iters=100
-    ),
     "LSH": lambda g: g.synchronize_spectral(method="lsh"),
     "GSH": lambda g: g.synchronize_spectral(method="gsh"),
-    # IRLS variants — same colour as plain counterpart, dotted line.
-    # Included in all experiments that have hole_density > 0 so the
-    # residual-based reweighting has meaningful signal to work with.
     "Sphere-IRLS": lambda g: g.synchronize_iterative(
         avg_method="sphere", max_iters=100, irls_iters=5, cauchy_scale=0.15
     ),
@@ -662,16 +650,12 @@ def experiment_real_data(
 
 # Visual style for each method family.
 STYLE = {
-    "Tree": {"color": "black", "marker": "s", "linestyle": "--"},
-    "Sphere": {"color": "red", "marker": "o", "linestyle": "-"},
-    "Euclidean": {"color": "blue", "marker": "^", "linestyle": "-"},
-    "Direction": {"color": "green", "marker": "v", "linestyle": "-"},
-    "LSH": {"color": "purple", "marker": "D", "linestyle": "-."},
-    "GSH": {"color": "orange", "marker": "x", "linestyle": "-."},
-    # IRLS variants share colour with their plain counterpart; dotted line distinguishes them.
-    "Sphere-IRLS": {"color": "red", "marker": "o", "linestyle": ":"},
-    "Euclidean-IRLS": {"color": "blue", "marker": "^", "linestyle": ":"},
-    "Direction-IRLS": {"color": "green", "marker": "v", "linestyle": ":"},
+    "Tree":           {"color": "black",  "marker": "s", "linestyle": "--"},
+    "LSH":            {"color": "purple", "marker": "D", "linestyle": "-."},
+    "GSH":            {"color": "orange", "marker": "x", "linestyle": "-."},
+    "Sphere-IRLS":    {"color": "red",    "marker": "o", "linestyle": "-"},
+    "Euclidean-IRLS": {"color": "blue",   "marker": "^", "linestyle": "-"},
+    "Direction-IRLS": {"color": "green",  "marker": "v", "linestyle": "-"},
 }
 
 

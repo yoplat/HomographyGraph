@@ -710,7 +710,9 @@ def calculate_angular_error(
     true_X0 = ground_truth[anchor]
 
     # Alignment matrix: Ĉ such that X̂_i · C ≈ X_i.
-    C = np.linalg.inv(est_X0) @ true_X0
+    # lstsq solves X̂_0 · C = X_0 in the least-squares sense, avoiding
+    # explicit inversion which fails when a vertex is near-singular.
+    C, _, _, _ = np.linalg.lstsq(est_X0, true_X0, rcond=None)
 
     errors = []
     for i in graph.vertices:
