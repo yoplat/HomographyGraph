@@ -401,9 +401,10 @@ def experiment_vary_outliers(
     Experiment 4: vary the outlier density, comparing plain iterative
     methods against their IRLS counterparts.
 
-    Mirrors Fig. 4 (right) of [1]: no noise (σ=0) so the only source of
-    error is the fraction of edges replaced by random homographies.  Both
-    plain methods and their IRLS variants are run side by side.
+    Mirrors Fig. 4 (right) of [1].  With both noise (σ=0.05) and outliers
+    present, the plain sphere method's L1-median robustness is insufficient
+    and IRLS variants show a clear advantage.  Both plain methods and their
+    IRLS counterparts are run side by side.
     """
     all_methods = {**METHODS, **METHODS_IRLS}
 
@@ -629,7 +630,7 @@ def main(start_from: int = 1):
       • Experiment 1: n ∈ {10, 20, 30, 50, 75, 100}, σ=0.05, ρ=0.5
       • Experiment 2: σ ∈ [0.01, 0.15], n=25, ρ=0.5
       • Experiment 3: ρ ∈ [0.0, 0.9], n=25, σ=0.05
-      • Experiment 4: γ ∈ [0.0, 0.6], n=25, σ=0.0, ρ=0.5 (plain vs. IRLS)
+      • Experiment 4: γ ∈ [0.0, 0.6], n=25, σ=0.05, ρ=0.2 (plain vs. IRLS)
       • Experiment 5: real image data (reprojection error)
     """
     N_TRIALS = 50
@@ -684,8 +685,8 @@ def main(start_from: int = 1):
         err4, time4 = experiment_vary_outliers(
             outlier_densities,
             n=25,
-            sigma=0.0,
-            hole_density=0.5,
+            sigma=0.05,
+            hole_density=0.2,
             n_trials=N_TRIALS,
         )
         plot_results(
