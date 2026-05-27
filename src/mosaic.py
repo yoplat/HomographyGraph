@@ -554,7 +554,7 @@ if __name__ == "__main__":
     # 3. Synchronize using the selected method.
     if args.method == "iterative":
         print(f"\n[Sync] Running iterative synchronization (avg={args.avg})...")
-        g.synchronize_iterative(avg_method=args.avg, max_iters=20)
+        g.synchronize_iterative(avg_method=args.avg, max_iters=100)
     elif args.method == "spectral_lsh":
         print("\n[Sync] Running spectral synchronization (LSH)...")
         g.synchronize_spectral(method="lsh")

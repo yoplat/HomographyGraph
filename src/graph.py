@@ -213,13 +213,16 @@ class Graph:
         c = H.mean(axis=0)
         c /= np.linalg.norm(c)
 
-        for _ in range(10):
+        for _ in range(50):
             dots = np.clip(H @ c, -1.0, 1.0)  # (K,)
             weights = 1.0 / np.maximum(np.sqrt(1 - dots**2), 1e-6)  # (K,)
-            c = weights @ H  # (9,)
-            c /= np.linalg.norm(c)
+            c_new = weights @ H  # (9,)
+            c_new /= np.linalg.norm(c_new)
+            if np.max(np.abs(c_new - c)) < 1e-8:
+                break
+            c = c_new
 
-        return c.reshape((3, 3))
+        return c_new.reshape((3, 3))
 
     # ======================================================================
     # Utility: vertex ordering
@@ -247,9 +250,14 @@ class Graph:
         self,
         avg_method: str = "sphere",
         max_iters: int = 100,
+        tol: float = 1e-6,
+        gauss_seidel: bool = False,
     ) -> None:
         """
         Iterative synchronization following Madhavan, Fusiello & Arrigoni [1].
+
+        Stops early when the maximum per-entry change across all vertices
+        drops below ``tol`` (convergence criterion).
 
         For each node i (processed in descending degree order):
           1. Compute neighbour estimates: X_{i|j} = Z_{ij} · X_j  for every
@@ -263,6 +271,15 @@ class Graph:
             One of ``"euclidean"``, ``"direction"``, ``"sphere"``.
         max_iters : int
             Maximum number of full sweeps over all vertices.
+        tol : float
+            Convergence threshold on max |X_new - X_old| entry-wise.
+        gauss_seidel : bool
+            If True, apply each X_i immediately (Gauss-Seidel) so subsequent
+            nodes in the same sweep see the fresher estimate — fewer sweeps on
+            synthetic data.  Can converge to a different fixed point on real
+            images due to order-dependent updates; benchmark before enabling.
+            Default is False (Jacobi): all updates applied after the full sweep,
+            order-independent and consistent with the original paper.
         """
         sorted_verts = self._sorted_vertices_by_degree()
         avg_func = self._averaging_map.get(
@@ -270,6 +287,7 @@ class Graph:
         )
 
         for _ in range(max_iters):
+            max_change = 0.0
             new_vertices = {}
             for i in sorted_verts:
                 neighbours = self.adj.get(i, set())
@@ -281,12 +299,21 @@ class Graph:
                     self.edges[(i, j)] @ self.vertices[j] for j in neighbours
                 ]
 
-                # Compute the scale-aware average.
                 avg_xi = avg_func(estimates)
-                new_vertices[i] = self._norm_matrix(avg_xi)
+                x_new = self._norm_matrix(avg_xi)
 
-            # Batch update after a full sweep.
-            self.vertices.update(new_vertices)
+                max_change = max(max_change, np.max(np.abs(x_new - self.vertices[i])))
+
+                if gauss_seidel:
+                    self.vertices[i] = x_new
+                else:
+                    new_vertices[i] = x_new
+
+            if not gauss_seidel:
+                self.vertices.update(new_vertices)
+
+            if max_change < tol:
+                break
 
     # ======================================================================
     # METHOD 2: Spectral synchronization  (Schroeder et al. [2])
@@ -655,7 +682,9 @@ def build_synthetic_graph(
     G_check.add_nodes_from(range(n))
     G_check.add_edges_from((i, j) for (i, j) in graph.edges.keys() if i < j)
     if not nx.is_connected(G_check):
-        for i, j in nx.minimum_spanning_edges(nx.complement(G_check), data=False):
+        for i, j in nx.minimum_spanning_edges(
+            nx.complement(G_check), data=False
+        ):
             if not nx.is_connected(G_check):
                 rel_ij = ground_truth[i] @ np.linalg.inv(ground_truth[j])
                 graph.add_edge(i, j, add_noise(rel_ij, sigma=sigma))

@@ -824,11 +824,12 @@ def main(start_from: int = 1):
       • Experiment 4: topology ∈ {linear, circular, grid, multilane, random}
       • Experiment 5: real image data (reprojection error)
     """
+    N_TRIALS = 50
     # ---- Experiment 1: varying nodes ----
     if start_from <= 1:
         node_counts = [10, 20, 30, 50, 75, 100]
         err1, time1 = experiment_vary_nodes(
-            node_counts, sigma=0.05, hole_density=0.5, n_trials=20
+            node_counts, sigma=0.05, hole_density=0.5, n_trials=N_TRIALS
         )
         plot_results(
             node_counts,
@@ -843,7 +844,7 @@ def main(start_from: int = 1):
     if start_from <= 2:
         noise_levels = [0.01, 0.02, 0.04, 0.06, 0.08, 0.10, 0.12, 0.15]
         err2, time2 = experiment_vary_noise(
-            noise_levels, n=25, hole_density=0.5, n_trials=20
+            noise_levels, n=25, hole_density=0.5, n_trials=N_TRIALS
         )
         plot_results(
             noise_levels,
@@ -858,7 +859,7 @@ def main(start_from: int = 1):
     if start_from <= 3:
         hole_densities = [0.0, 0.1, 0.2, 0.3, 0.5, 0.7, 0.8, 0.9]
         err3, time3 = experiment_vary_holes(
-            hole_densities, n=25, sigma=0.05, n_trials=20
+            hole_densities, n=25, sigma=0.05, n_trials=N_TRIALS
         )
         plot_results(
             hole_densities,
@@ -870,29 +871,29 @@ def main(start_from: int = 1):
         )
 
     # ---- Experiment 4: varying topology ----
-    if start_from <= 4:
-        err4, time4 = experiment_vary_topology(
-            n=36, sigma=0.05, hole_density=0.2, n_trials=20
-        )
-        plot_topology_results(
-            err4,
-            time4,
-            title="Topology comparison",
-            save_path="exp4_vary_topology.png",
-        )
-
-    # ---- Experiment 5: real image data ----
-    if start_from <= 5:
-        dataset = [
-            f"compressed_images/IMG_{i}.jpg" for i in range(4714, 4714 + 10)
-        ]
-        err5, time5 = experiment_real_data(dataset)
-        plot_real_data_results(
-            err5,
-            time5,
-            title="Real image data benchmark",
-            save_path="exp5_real_data.png",
-        )
+    # if start_from <= 4:
+    #     err4, time4 = experiment_vary_topology(
+    #         n=36, sigma=0.2, hole_density=0.2, n_trials=N_TRIALS
+    #     )
+    #     plot_topology_results(
+    #         err4,
+    #         time4,
+    #         title="Topology comparison",
+    #         save_path="exp4_vary_topology.png",
+    #     )
+    #
+    # # ---- Experiment 5: real image data ----
+    # if start_from <= 5:
+    #     dataset = [
+    #         f"compressed_images/IMG_{i}.jpg" for i in range(4714, 4714 + 10)
+    #     ]
+    #     err5, time5 = experiment_real_data(dataset)
+    #     plot_real_data_results(
+    #         err5,
+    #         time5,
+    #         title="Real image data benchmark",
+    #         save_path="exp5_real_data.png",
+    #     )
 
     # ---- Summary ----
     print("\n" + "=" * 60)
@@ -955,7 +956,11 @@ def save_combined_results(
         "exp4_vary_topology.png",
         "exp5_real_data.png",
     ]
-    images = [(name, mpimg.imread(name)) for name in candidates if os.path.exists(name)]
+    images = [
+        (name, mpimg.imread(name))
+        for name in candidates
+        if os.path.exists(name)
+    ]
 
     if not images:
         print("  No experiment PNGs found — skipping combined output.")
