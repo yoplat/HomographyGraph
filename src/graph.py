@@ -161,22 +161,35 @@ class Graph:
     # ======================================================================
 
     @staticmethod
-    def _averaging_euclidean(estimates: List[np.ndarray]) -> np.ndarray:
+    def _averaging_euclidean(
+        estimates: List[np.ndarray],
+        weights: Optional[np.ndarray] = None,
+    ) -> np.ndarray:
         """
         Euclidean average (Sec. 4.3 of [1]).
 
         Normalise each estimate to unit Frobenius norm, compute the
         componentwise mean, then re-normalise.  This ignores the curved
         geometry of the sphere but is fast and works surprisingly well.
+
+        Parameters
+        ----------
+        weights : array of shape (K,), optional
+            Per-estimate IRLS weights.  Uniform if None.
         """
-        # Map each 3×3 matrix to a unit-norm vector in R^9.
-        h_vecs = [h.flatten() / np.linalg.norm(h.flatten()) for h in estimates]
-        c = np.mean(h_vecs, axis=0)
+        h_vecs = np.array(
+            [h.flatten() / np.linalg.norm(h.flatten()) for h in estimates]
+        )
+        w = np.ones(len(estimates)) if weights is None else np.asarray(weights)
+        c = (w[:, None] * h_vecs).sum(axis=0)
         c /= np.linalg.norm(c)
         return c.reshape((3, 3))
 
     @staticmethod
-    def _averaging_direction(estimates: List[np.ndarray]) -> np.ndarray:
+    def _averaging_direction(
+        estimates: List[np.ndarray],
+        weights: Optional[np.ndarray] = None,
+    ) -> np.ndarray:
         """
         Direction-based average (Sec. 4.1 of [1]).
 
@@ -184,39 +197,56 @@ class Graph:
         the orthogonal complement of the other is zero.  Stacking these
         constraints for all estimates and solving in the least-squares sense
         reduces to finding the eigenvector of
-            M = Σ_k  (h_k h_k^T) / (h_k^T h_k)
+            M = Σ_k  w_k · (h_k h_k^T) / (h_k^T h_k)
         corresponding to the *largest* eigenvalue.
+
+        Parameters
+        ----------
+        weights : array of shape (K,), optional
+            Per-estimate IRLS weights.  Uniform if None.
         """
         h_vecs = [h.flatten() for h in estimates]
-        # Build the 9×9 matrix whose maximum eigenvector is the centroid.
-        M = sum(np.outer(h, h) / np.dot(h, h) for h in h_vecs)
+        w = np.ones(len(estimates)) if weights is None else np.asarray(weights)
+        M = sum(wk * np.outer(h, h) / np.dot(h, h) for wk, h in zip(w, h_vecs))
         eigenvalues, eigenvectors = np.linalg.eigh(M)
         # eigh returns eigenvalues in ascending order — take the last column.
         c = eigenvectors[:, -1]
         return c.reshape((3, 3))
 
     @staticmethod
-    def _averaging_sphere(estimates: List[np.ndarray]) -> np.ndarray:
+    def _averaging_sphere(
+        estimates: List[np.ndarray],
+        weights: Optional[np.ndarray] = None,
+    ) -> np.ndarray:
         """
-        Spherical average — L1 geodesic mean on the unit sphere (Sec. 4.2 of [1]).
+        Spherical average — weighted L1 geodesic mean on the unit sphere (Sec. 4.2 of [1]).
 
-        The centroid c minimises Σ_k arccos(c^T h̄_k) subject to ||c|| = 1.
-        Setting the gradient to zero gives a fixed-point equation (Eq. 10 in [1]):
-            c = α · Σ_k  h̄_k / sqrt(1 − (c^T h̄_k)²)
+        The centroid c minimises Σ_k w_k · arccos(c^T h̄_k) subject to ||c|| = 1.
+        Setting the gradient to zero gives the fixed-point equation (Eq. 10 in [1]):
+            c = α · Σ_k  w_k · h̄_k / sqrt(1 − (c^T h̄_k)²)
         which we iterate until convergence.
+
+        Parameters
+        ----------
+        weights : array of shape (K,), optional
+            Per-estimate IRLS weights (w_k in the formula above).  Uniform if None.
         """
         # (K, 9) matrix of unit-norm flattened homographies
         H = np.stack([h.flatten() for h in estimates])
         H /= np.linalg.norm(H, axis=1, keepdims=True)
 
-        # Initialise with Euclidean mean
-        c = H.mean(axis=0)
+        irls_w = (
+            np.ones(len(estimates)) if weights is None else np.asarray(weights)
+        )
+
+        # Initialise with weighted Euclidean mean
+        c = (irls_w[:, None] * H).sum(axis=0)
         c /= np.linalg.norm(c)
 
         for _ in range(50):
             dots = np.clip(H @ c, -1.0, 1.0)  # (K,)
-            weights = 1.0 / np.maximum(np.sqrt(1 - dots**2), 1e-6)  # (K,)
-            c_new = weights @ H  # (9,)
+            sphere_w = 1.0 / np.maximum(np.sqrt(1 - dots**2), 1e-6)  # (K,)
+            c_new = (irls_w * sphere_w) @ H  # (9,)
             c_new /= np.linalg.norm(c_new)
             if np.max(np.abs(c_new - c)) < 1e-8:
                 break
@@ -243,6 +273,62 @@ class Graph:
         )
 
     # ======================================================================
+    # IRLS helpers
+    # ======================================================================
+
+    def _edge_residual(self, i: int, j: int) -> float:
+        """
+        Angular residual (radians) between the measured Z_ij and the
+        currently estimated X_i · X_j^{-1}.
+
+        This is the per-edge analogue of ``calculate_angular_error``:
+        both vectors are flattened to R^9 and normalised before the dot
+        product, and the absolute value handles the sign ambiguity of
+        projective representations.
+        """
+        Z_ij = self.edges[(i, j)]
+        pred = self.vertices[i] @ np.linalg.inv(self.vertices[j])
+        v1 = Z_ij.flatten()
+        v1 = v1 / np.linalg.norm(v1)
+        v2 = pred.flatten()
+        v2 = v2 / np.linalg.norm(v2)
+        return float(np.arccos(np.clip(np.abs(np.dot(v1, v2)), 0.0, 1.0)))
+
+    def _compute_irls_weights(
+        self, cauchy_scale: float
+    ) -> Dict[Tuple[int, int], float]:
+        """
+        Compute Cauchy IRLS weights for every undirected edge.
+
+        For each edge (i, j) the residual r = min(r_ij, r_ji) is computed
+        (both are equal by construction, but the min guarantees symmetry as
+        stated in the paper).  The Cauchy robust function
+            w = 1 / (1 + (r / cauchy_scale)^2)
+        maps small residuals (inliers) close to 1 and large residuals
+        (outliers) toward 0.
+
+        Parameters
+        ----------
+        cauchy_scale : float
+            Controls the inlier/outlier threshold.  Residuals much larger
+            than this value are effectively suppressed.
+
+        Returns
+        -------
+        weights : dict  {(min_i, max_j) → float}
+            One weight per undirected edge.
+        """
+        weights: Dict[Tuple[int, int], float] = {}
+        for i, j in self.edges:
+            if i >= j:
+                continue
+            r_ij = self._edge_residual(i, j)
+            r_ji = self._edge_residual(j, i)
+            r = min(r_ij, r_ji)
+            weights[(i, j)] = 1.0 / (1.0 + (r / cauchy_scale) ** 2)
+        return weights
+
+    # ======================================================================
     # METHOD 1: Iterative synchronization  (Madhavan et al. [1])
     # ======================================================================
 
@@ -252,9 +338,12 @@ class Graph:
         max_iters: int = 100,
         tol: float = 1e-6,
         gauss_seidel: bool = False,
+        irls_iters: int = 0,
+        cauchy_scale: float = 0.1,
     ) -> None:
         """
-        Iterative synchronization following Madhavan, Fusiello & Arrigoni [1].
+        Iterative synchronization following Madhavan, Fusiello & Arrigoni [1],
+        with optional IRLS outlier suppression.
 
         Stops early when the maximum per-entry change across all vertices
         drops below ``tol`` (convergence criterion).
@@ -262,15 +351,22 @@ class Graph:
         For each node i (processed in descending degree order):
           1. Compute neighbour estimates: X_{i|j} = Z_{ij} · X_j  for every
              neighbour j of i.
-          2. Average these estimates using the chosen method to get a new X_i.
+          2. Average these estimates (weighted by current IRLS weights) to
+             get a new X_i.
           3. Re-normalise X_i into SL(3).
+
+        When ``irls_iters > 0`` an outer IRLS loop wraps the inner sync sweep:
+        after each full convergence, per-edge Cauchy weights are recomputed
+        from the residual  r_ij = angle(Z_ij, X_i · X_j^{-1})  in R^9, then
+        the inner sweep restarts with the updated weights.  This suppresses
+        gross-outlier edges without requiring explicit outlier detection.
 
         Parameters
         ----------
         avg_method : str
             One of ``"euclidean"``, ``"direction"``, ``"sphere"``.
         max_iters : int
-            Maximum number of full sweeps over all vertices.
+            Maximum number of full sweeps per IRLS round.
         tol : float
             Convergence threshold on max |X_new - X_old| entry-wise.
         gauss_seidel : bool
@@ -280,40 +376,67 @@ class Graph:
             images due to order-dependent updates; benchmark before enabling.
             Default is False (Jacobi): all updates applied after the full sweep,
             order-independent and consistent with the original paper.
+        irls_iters : int
+            Number of IRLS outer iterations (weight-update rounds).  0 (default)
+            gives the original unweighted behaviour.
+        cauchy_scale : float
+            Inlier/outlier threshold for the Cauchy weight function (radians).
+            Edges with residual >> cauchy_scale are suppressed toward weight 0.
+            Typical range: 0.05–0.3 depending on expected noise level.
         """
         sorted_verts = self._sorted_vertices_by_degree()
         avg_func = self._averaging_map.get(
             avg_method.lower(), self._averaging_euclidean
         )
 
-        for _ in range(max_iters):
-            max_change = 0.0
-            new_vertices = {}
-            for i in sorted_verts:
-                neighbours = self.adj.get(i, set())
-                if not neighbours:
-                    continue
+        # Uniform weights to start; updated each IRLS round.
+        edge_weights: Dict[Tuple[int, int], float] = {
+            (min(i, j), max(i, j)): 1.0 for i, j in self.edges if i < j
+        }
 
-                # Eq. (4) in [1]: X_{i|j} = Z_{ij} · X_j
-                estimates = [
-                    self.edges[(i, j)] @ self.vertices[j] for j in neighbours
-                ]
+        for _outer in range(irls_iters + 1):
+            # ── Inner sync sweep ─────────────────────────────────────────────
+            for _ in range(max_iters):
+                max_change = 0.0
+                new_vertices = {}
+                for i in sorted_verts:
+                    neighbours = list(self.adj.get(i, set()))
+                    if not neighbours:
+                        continue
 
-                avg_xi = avg_func(estimates)
-                x_new = self._norm_matrix(avg_xi)
+                    # Eq. (4) in [1]: X_{i|j} = Z_{ij} · X_j
+                    estimates = [
+                        self.edges[(i, j)] @ self.vertices[j]
+                        for j in neighbours
+                    ]
+                    w = np.array(
+                        [
+                            edge_weights[(min(i, j), max(i, j))]
+                            for j in neighbours
+                        ]
+                    )
 
-                max_change = max(max_change, np.max(np.abs(x_new - self.vertices[i])))
+                    avg_xi = avg_func(estimates, w)
+                    x_new = self._norm_matrix(avg_xi)
 
-                if gauss_seidel:
-                    self.vertices[i] = x_new
-                else:
-                    new_vertices[i] = x_new
+                    max_change = max(
+                        max_change, np.max(np.abs(x_new - self.vertices[i]))
+                    )
 
-            if not gauss_seidel:
-                self.vertices.update(new_vertices)
+                    if gauss_seidel:
+                        self.vertices[i] = x_new
+                    else:
+                        new_vertices[i] = x_new
 
-            if max_change < tol:
-                break
+                if not gauss_seidel:
+                    self.vertices.update(new_vertices)
+
+                if max_change < tol:
+                    break
+
+            # ── IRLS weight update (skip after the last round) ────────────────
+            if _outer < irls_iters:
+                edge_weights = self._compute_irls_weights(cauchy_scale)
 
     # ======================================================================
     # METHOD 2: Spectral synchronization  (Schroeder et al. [2])
