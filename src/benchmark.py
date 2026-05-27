@@ -72,6 +72,7 @@ METHODS = {
     ),
     "LSH": lambda g: g.synchronize_spectral(method="lsh"),
     "GSH": lambda g: g.synchronize_spectral(method="gsh"),
+    "Lie": lambda g: g.synchronize_lie(max_iters=100),
 }
 
 # Used only in experiment_vary_outliers (γ > 0).
@@ -84,6 +85,9 @@ METHODS_IRLS = {
     ),
     "Direction-IRLS": lambda g: g.synchronize_iterative(
         avg_method="direction", max_iters=100, irls_iters=5, cauchy_scale=0.15
+    ),
+    "Lie-IRLS": lambda g: g.synchronize_lie(
+    max_iters=100, irls_iters=5, cauchy_scale=0.15
     ),
 }
 
@@ -527,6 +531,8 @@ STYLE = {
     "Sphere-IRLS": {"color": "red", "marker": "o", "linestyle": ":"},
     "Euclidean-IRLS": {"color": "blue", "marker": "^", "linestyle": ":"},
     "Direction-IRLS": {"color": "green", "marker": "v", "linestyle": ":"},
+    "Lie":      {"color": "darkcyan", "marker": "P", "linestyle": "-"},
+    "Lie-IRLS": {"color": "darkcyan", "marker": "P", "linestyle": ":"},
 }
 
 
