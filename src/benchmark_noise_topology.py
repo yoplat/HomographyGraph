@@ -509,6 +509,7 @@ def main():
     )
     args = parser.parse_args()
 
+    os.makedirs("results", exist_ok=True)
     np.random.seed(42)
 
     noise_levels = [0.02, 0.04, 0.10, 0.15, 0.20, 0.25]
@@ -524,21 +525,21 @@ def main():
     plot_grid(
         results,
         noise_levels,
-        save_path="exp_noise_topology_grid.png",
+        save_path="results/exp_noise_topology_grid.png",
     )
 
     if not args.no_method_plot:
         plot_method_comparison(
             results,
             noise_levels,
-            save_path="exp_noise_topology_methods.png",
+            save_path="results/exp_noise_topology_methods.png",
         )
 
     if not args.no_heatmap:
         plot_heatmap(
             results,
             noise_levels,
-            save_path="exp_noise_topology_heatmap.png",
+            save_path="results/exp_noise_topology_heatmap.png",
         )
 
     print("\nDone.")

@@ -32,6 +32,7 @@ References
     to Multiple-View Homography Estimation", IEEE WACV 2011.
 """
 
+import os
 import numpy as np
 import matplotlib.pyplot as plt
 import time
@@ -633,6 +634,7 @@ def main(start_from: int = 1):
       • Experiment 4: γ ∈ [0.0, 0.6], n=25, σ=0.05, ρ=0.2 (plain vs. IRLS)
       • Experiment 5: real image data (reprojection error)
     """
+    os.makedirs("results", exist_ok=True)
     N_TRIALS = 50
     # ---- Experiment 1: varying nodes ----
     if start_from <= 1:
@@ -646,7 +648,7 @@ def main(start_from: int = 1):
             time1,
             xlabel="Number of Nodes",
             title="Varying graph size",
-            save_path="exp1_vary_nodes.png",
+            save_path="results/exp1_vary_nodes.png",
         )
 
     # ---- Experiment 2: varying noise ----
@@ -661,7 +663,7 @@ def main(start_from: int = 1):
             time2,
             xlabel="Noise σ",
             title="Varying noise level",
-            save_path="exp2_vary_noise.png",
+            save_path="results/exp2_vary_noise.png",
         )
 
     # ---- Experiment 3: varying hole density ----
@@ -676,7 +678,7 @@ def main(start_from: int = 1):
             time3,
             xlabel="Hole Density ρ",
             title="Varying hole density",
-            save_path="exp3_vary_holes.png",
+            save_path="results/exp3_vary_holes.png",
         )
 
     # ---- Experiment 4: varying outlier density ----
@@ -695,7 +697,7 @@ def main(start_from: int = 1):
             time4,
             xlabel="Outlier Density γ",
             title="Varying outlier density (plain vs. IRLS)",
-            save_path="exp4_vary_outliers.png",
+            save_path="results/exp4_vary_outliers.png",
         )
 
     # ---- Experiment 5: real image data ----
@@ -708,7 +710,7 @@ def main(start_from: int = 1):
             err5,
             time5,
             title="Real image data benchmark",
-            save_path="exp5_real_data.png",
+            save_path="results/exp5_real_data.png",
         )
 
     # ---- Summary ----
@@ -752,7 +754,7 @@ def main(start_from: int = 1):
 
 
 def save_combined_results(
-    save_path: str = "benchmark_results.png",
+    save_path: str = "results/benchmark_results.png",
 ) -> None:
     """
     Tile all available per-experiment PNGs into a single overview figure.
@@ -762,15 +764,14 @@ def save_combined_results(
     (earlier experiment images from a previous run are still included).
     Layout: two experiments per row, left-aligned.
     """
-    import os
     import matplotlib.image as mpimg
 
     candidates = [
-        "exp1_vary_nodes.png",
-        "exp2_vary_noise.png",
-        "exp3_vary_holes.png",
-        "exp4_vary_outliers.png",
-        "exp5_real_data.png",
+        "results/exp1_vary_nodes.png",
+        "results/exp2_vary_noise.png",
+        "results/exp3_vary_holes.png",
+        "results/exp4_vary_outliers.png",
+        "results/exp5_real_data.png",
     ]
     images = [
         (name, mpimg.imread(name))
