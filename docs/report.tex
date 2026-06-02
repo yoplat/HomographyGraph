@@ -1,0 +1,579 @@
+\documentclass[11pt, a4paper]{article}
+\usepackage[utf8]{inputenc}
+\usepackage[T1]{fontenc}
+\usepackage{graphicx}
+\usepackage{hyperref}
+\usepackage{geometry}
+\usepackage{float}
+\usepackage{amsmath, amssymb}
+\usepackage{booktabs}
+\usepackage{caption}
+\usepackage{subcaption}
+\usepackage{enumitem}
+\usepackage{algorithmic}
+\usepackage{algorithm}
+\usepackage{xcolor}
+\geometry{a4paper, margin=1in}
+
+\hypersetup{
+    colorlinks=true,
+    linkcolor=blue!70!black,
+    citecolor=green!50!black,
+    urlcolor=blue!70!black,
+}
+
+\title{Homography Synchronization over Graphs:\\
+       Iterative, Spectral, and Robust Methods}
+\author{}
+\date{\today}
+
+\begin{document}
+
+\maketitle
+
+% ===========================================================================
+\begin{abstract}
+This report describes the design, implementation, and experimental evaluation of
+a framework for synchronizing $3\times3$ projective transformations (homographies)
+over a graph of pairwise relative measurements.  Two main families of algorithms
+are implemented: \emph{iterative} methods based on Madhavan, Fusiello, and
+Arrigoni~\cite{madhavan2024}, offering Euclidean, Direction, and Sphere (L1
+geodesic mean) averaging with optional IRLS outlier suppression; and
+\emph{spectral} (closed-form) methods based on Schroeder, Bartoli, Georgel, and
+Navab~\cite{schroeder2011}, providing Locally Scaled Homographies (LSH) and
+Globally Scaled Homographies (GSH).  A spanning-tree baseline is included for
+reference.  The framework is benchmarked on synthetic graphs---varying graph
+size, noise level, edge density, outlier ratio, and topology---as well as on
+real images via a full SIFT-based mosaicking pipeline.  Results demonstrate that
+Sphere averaging is the most accurate iterative method overall, that IRLS
+variants dramatically outperform plain methods in the presence of outliers, and
+that the choice of graph topology significantly affects relative algorithm
+performance.
+\end{abstract}
+
+% ===========================================================================
+\section{Introduction}
+\label{sec:introduction}
+
+Given a set of $n$ views (images), the \emph{homography synchronization} problem
+seeks to recover the unknown absolute projective transformations
+$\{X_i\}_{i=1}^{n}$, $X_i \in \mathbb{R}^{3\times3}$, from a set of noisy
+pairwise measurements $Z_{ij} \approx X_i \, X_j^{-1}$ available on the edges
+of a graph $\mathcal{G} = (\mathcal{V}, \mathcal{E})$.  This problem arises
+naturally in image mosaicking, Structure-from-Motion, and multi-view geometry,
+wherever relative inter-frame transformations are estimated independently and
+must be made globally consistent.
+
+The synchronization solution is inherently defined up to a global right
+multiplication: if $\{X_i\}$ is a solution, so is $\{X_i \cdot C\}$ for any
+invertible $C$.  All methods in this project operate in $\mathrm{SL}(3)$---the
+group of $3\times3$ real matrices with unit determinant---which removes the scale
+ambiguity inherent to projective transformations and turns the approximate
+consistency relation $Z_{ij} \simeq X_i X_j^{-1}$ into the strict equality
+$Z_{ij} = X_i X_j^{-1}$.
+
+% ===========================================================================
+\section{Mathematical Formulation}
+\label{sec:formulation}
+
+\subsection{The Synchronization Graph}
+
+Let $\mathcal{G} = (\mathcal{V}, \mathcal{E})$ be an undirected graph where
+each vertex $i \in \mathcal{V}$ carries an unknown absolute homography
+$X_i \in \mathrm{SL}(3)$, and each edge $(i,j) \in \mathcal{E}$ carries a
+measured relative homography $Z_{ij}$.  In the noise-free case:
+\begin{equation}
+    Z_{ij} = X_i \, X_j^{-1}, \qquad \forall\,(i,j) \in \mathcal{E}.
+    \label{eq:consistency}
+\end{equation}
+Both directions are stored: $Z_{ji} = Z_{ij}^{-1}$.
+
+\subsection{SL(3) Normalisation}
+
+Every $3\times3$ matrix $H$ is projected into $\mathrm{SL}(3)$ by dividing by
+the cube root of its determinant:
+\begin{equation}
+    \bar{H} = \frac{H}{\sqrt[3]{\det(H)}}, \qquad \det(\bar{H}) = 1.
+\end{equation}
+For $3\times3$ real matrices the cube root is always real, making this
+normalisation straightforward.
+
+\subsection{Error Metric}
+
+Since the solution is defined up to a global transformation $C$, evaluation
+first aligns the estimate to the ground truth by solving $C = \hat{X}_0^{-1}
+X_0$ using vertex~$0$ as anchor.  The angular error for vertex $i$ is then:
+\begin{equation}
+    e_i = \arccos\!\Big(\big|\operatorname{vec}(\hat{X}_i C)^\top
+          \operatorname{vec}(X_i)\big|\Big),
+    \label{eq:angular_error}
+\end{equation}
+where $\operatorname{vec}(\cdot)$ denotes unit-norm flattening to $\mathbb{R}^9$.
+The absolute value handles the antipodal equivalence on the sphere.  The final
+metric is the mean angular error in degrees across all vertices.
+
+% ===========================================================================
+\section{Synchronization Algorithms}
+\label{sec:algorithms}
+
+\subsection{Iterative Methods (Madhavan et al.~\cite{madhavan2024})}
+
+Each vertex $i$ is updated in turn by computing \emph{neighbour estimates}
+\begin{equation}
+    X_{i|j} = Z_{ij} \, X_j, \qquad \forall\, j \in \mathcal{N}(i),
+    \label{eq:neighbour_est}
+\end{equation}
+and then averaging these estimates to obtain a new $X_i$.  Vertices are
+processed in order of descending degree, since high-degree nodes receive more
+constraints and are therefore more stable.  The sweep repeats until the maximum
+entry-wise change drops below a tolerance~$\tau$.
+
+Three notions of average are implemented:
+
+\paragraph{Euclidean averaging.}
+Normalise each estimate to unit Frobenius norm, compute the weighted
+componentwise mean, then re-normalise:
+\begin{equation}
+    c = \frac{\sum_k w_k \, \bar{h}_k}{\|\sum_k w_k \, \bar{h}_k\|},
+\end{equation}
+where $\bar{h}_k = \operatorname{vec}(X_{i|j_k}) / \|\operatorname{vec}(X_{i|j_k})\|$.
+
+\paragraph{Direction averaging.}
+Finds the eigenvector of
+$M = \sum_k w_k \, (h_k h_k^\top) / (h_k^\top h_k)$
+corresponding to the largest eigenvalue.  This is L2, scale-invariant.
+
+\paragraph{Sphere averaging (L1 geodesic mean).}
+Minimises $\sum_k w_k \arccos(c^\top \bar{h}_k)$ subject to $\|c\|=1$ via the
+fixed-point iteration:
+\begin{equation}
+    c \leftarrow \alpha \sum_k
+        \frac{w_k \, \bar{h}_k}{\sqrt{1 - (c^\top \bar{h}_k)^2}},
+    \label{eq:sphere_fp}
+\end{equation}
+iterated until convergence ($\leq 50$ steps, or $\|c_{\text{new}} - c\|_\infty < 10^{-8}$).
+
+\subsubsection{IRLS Outlier Suppression}
+
+When outlier edges are present, an outer \emph{Iteratively Reweighted Least
+Squares} (IRLS) loop wraps the inner synchronization sweep.  After each full
+convergence, per-edge Cauchy weights are recomputed from the residual:
+\begin{equation}
+    w_{ij} = \frac{1}{1 + (r_{ij} / s)^2},
+    \label{eq:cauchy}
+\end{equation}
+where $r_{ij}$ is the angular residual (in radians) between $Z_{ij} X_j$ and
+$X_i$, and $s$ is the Cauchy scale parameter (typically $0.05$--$0.3$).  Inlier
+edges receive weight $\approx 1$, while gross outliers are suppressed toward~$0$.
+
+The inner sweep then restarts with updated weights.  This procedure is repeated
+for a fixed number of IRLS iterations (typically 5), requiring no explicit
+outlier detection.
+
+\subsection{Spectral Methods (Schroeder et al.~\cite{schroeder2011})}
+
+These methods build a $3n \times 3n$ block matrix from all known inter-frame
+homographies and extract the absolute homographies from its null space via SVD.
+
+\paragraph{LSH (Locally Scaled Homographies).}
+Builds the block matrix $S$ with entries:
+\begin{equation}
+    S[k, i] = \frac{\gamma_{i,k}}{\zeta_k} \, H_{i,k},
+\end{equation}
+where $\gamma_{i,k} = 1$ if the homography from $i$ to $k$ is known,
+and $\zeta_k = \sum_i \gamma_{i,k}$ counts known connections to node $k$
+(including self).  In the noise-free case $S \cdot U = U$, so $U$ lies in the
+null space of $(S - I)$.  The three right singular vectors of $(S-I)$ with the
+smallest singular values approximate $U$.
+
+\paragraph{GSH (Globally Scaled Homographies).}
+Corrects the weighting bias of LSH by building:
+\begin{equation}
+    G[k,k] = (1 - \zeta_k)\,I, \qquad G[k,i] = \gamma_{i,k} \, H_{i,k}
+    \quad (i \neq k).
+\end{equation}
+The absolute homographies are again extracted from the null space of $G$ via SVD.
+
+Both methods handle missing data naturally (not all pairs need to be connected).
+Their cost is $O((3n)^3)$ in the SVD, making them fast for moderate graph sizes
+but less scalable than iterative methods for very large graphs.
+
+\subsection{Spanning-Tree Baseline}
+
+The simplest approach: find a BFS spanning tree rooted at the highest-degree
+vertex and chain relative homographies along each path:
+\begin{equation}
+    X_{\text{child}} = Z_{\text{child},\text{parent}} \cdot X_{\text{parent}}.
+\end{equation}
+This is $O(n)$ and very fast, but accumulates errors from root to leaves and
+does not exploit redundant measurements.
+
+% ===========================================================================
+\section{Image Mosaicking Pipeline}
+\label{sec:mosaic}
+
+The \texttt{mosaic.py} module implements a full image stitching pipeline that
+applies homography synchronization to real images:
+
+\begin{enumerate}[leftmargin=*]
+    \item \textbf{Feature extraction:} SIFT keypoints and 128-dimensional
+          descriptors are computed on CPU using OpenCV's \texttt{SIFT\_create()}.
+
+    \item \textbf{Descriptor matching:} A GPU-accelerated brute-force matcher
+          (\texttt{cv.cuda.DescriptorMatcher}) with L2 norm is used when CUDA is
+          available; otherwise a CPU \texttt{BFMatcher} fallback is employed.
+          Features are extracted once per image---$O(N)$---rather than
+          re-extracted inside the $O(N^2)$ matching loop.
+
+    \item \textbf{Pairwise homography estimation:} Lowe's ratio test (threshold
+          $0.7$) filters ambiguous matches from repetitive patterns.  RANSAC
+          (inlier tolerance $5.0$~px, minimum $10$ inliers) robustly estimates
+          each pairwise homography.
+
+    \item \textbf{Graph construction:} Vertices are images; each successfully
+          matched pair becomes an edge carrying its relative homography $Z_{ij}$.
+
+    \item \textbf{Synchronization:} Any of the methods from
+          Section~\ref{sec:algorithms} is applied.
+
+    \item \textbf{Mosaic rendering:} Each image is warped into the reference
+          frame using the synchronised absolute homographies, via
+          GPU-accelerated \texttt{warpPerspective} when available.  A
+          translation matrix ensures all coordinates are non-negative.
+\end{enumerate}
+
+Quality is evaluated using \emph{mean reprojection error}: for every matched
+edge $(i,j)$, inlier points from image $i$ are warped into image $j$ using the
+synchronised transform $\hat{Z}_{ji} = \hat{X}_j \hat{X}_i^{-1}$, and the
+pixel distance to the actual matched keypoint is measured.  Lower values
+indicate better consistency; typical good values are $< 5$~px.
+
+% ===========================================================================
+\section{Source Code Overview}
+\label{sec:code}
+
+The \texttt{src/} directory contains the following modules:
+
+\begin{description}[leftmargin=*, style=nextline]
+    \item[\texttt{graph.py} (1466 lines)]
+        Core module implementing the \texttt{Graph} class with adjacency
+        structure, SL(3) normalisation, all three iterative averaging functions
+        (Euclidean, Direction, Sphere), IRLS weight computation with Cauchy
+        robust function, the spectral synchronization methods (LSH, GSH), and
+        the spanning-tree baseline.  Also provides utilities for synthetic graph
+        construction (random Erd\H{o}s--R\'{e}nyi, linear chain, circular ring,
+        2-D grid, and multi-lane topologies), ground-truth generation in SL(3),
+        noise injection, outlier edge insertion, angular error computation, and
+        graph visualization via NetworkX and Matplotlib.
+
+    \item[\texttt{mosaic.py} (601 lines)]
+        Full image mosaicking pipeline: SIFT feature extraction, GPU/CPU
+        BFMatcher descriptor matching, Lowe's ratio test, RANSAC homography
+        estimation, graph construction from images, reprojection error
+        computation, mosaic rendering with GPU-accelerated warp, and
+        command-line interface with configurable synchronization method,
+        averaging variant, IRLS iterations, and Cauchy scale.
+
+    \item[\texttt{benchmark.py} (831 lines)]
+        Main benchmarking script running five experiments (Sections
+        \ref{sec:exp1}--\ref{sec:exp5}).  Implements the method registry
+        (6~plain methods $+$ 3~IRLS variants), a single-trial runner
+        supporting all topologies, experiment sweep functions, consistent
+        plotting with per-method visual styles, a combined results tiler,
+        and a command-line \texttt{--from N} option for resuming from a
+        specific experiment.
+
+    \item[\texttt{benchmark\_noise\_topology.py} (549 lines)]
+        Joint noise $\times$ topology benchmark (Section~\ref{sec:exp_topo}).
+        Sweeps noise levels across six graph topologies (linear bw=1, linear
+        bw=3, circular chord=3, grid 8-connected, multilane 3~lanes, random
+        E-R) and produces a grid of error-vs-noise line plots, a per-method
+        topology-comparison plot, and a winner heatmap.
+
+    \item[\texttt{compress.py} (49 lines)]
+        Utility for resizing and JPEG-compressing a dataset of images to
+        accelerate processing and reduce memory usage during mosaicking
+        (default: $25\%$ scale, quality~100).
+\end{description}
+
+% ===========================================================================
+\section{Experimental Setup}
+\label{sec:setup}
+
+All synthetic experiments use 50 independent trials per data point, and the
+reported metric is the \emph{median} angular error (in degrees) to reduce
+sensitivity to rare divergence events.  Unless otherwise noted, the default
+graph topology is random (Erd\H{o}s--R\'{e}nyi with edge dropout), with $n=25$
+nodes.
+
+Six synchronization methods are compared in Experiments 1--3:
+\textbf{Tree} (baseline), \textbf{Sphere}, \textbf{Euclidean},
+\textbf{Direction} (iterative), \textbf{LSH}, and \textbf{GSH} (spectral).
+Experiment~4 adds three IRLS variants: \textbf{Sphere-IRLS},
+\textbf{Euclidean-IRLS}, and \textbf{Direction-IRLS} (5~IRLS iterations,
+Cauchy scale $s = 0.15$).
+
+% ===========================================================================
+\section{Experimental Results}
+\label{sec:results}
+
+% ------- Experiment 1 -------
+\subsection{Experiment 1: Varying Graph Size}
+\label{sec:exp1}
+
+\textbf{Setup:} $n \in \{10, 20, 30, 50, 75, 100\}$, $\sigma = 0.05$,
+$\rho = 0.5$ (hole density), $\gamma = 0$ (no outliers).
+
+\begin{figure}[H]
+    \centering
+    \includegraphics[width=\textwidth]{../exp1_vary_nodes.png}
+    \caption{Experiment 1: Angular error (left) and execution time (right)
+             as a function of graph size.}
+    \label{fig:exp1}
+\end{figure}
+
+\textbf{Observations:}  As the graph grows, more redundant measurements become
+available, and all iterative/spectral methods improve---Sphere averaging
+consistently achieves the lowest error (from ${\sim}8^\circ$ at $n{=}10$ down to
+${\sim}2^\circ$ at $n{=}100$).  The spanning-tree baseline \emph{worsens} with
+size (from ${\sim}13^\circ$ to ${\sim}16^\circ$), confirming its error
+accumulation from root to leaves.  On execution time, LSH/GSH remain the
+fastest synchronization methods (single SVD solve), while Sphere is the slowest
+due to its per-node fixed-point iteration; the tree baseline is near-instant.
+
+% ------- Experiment 2 -------
+\subsection{Experiment 2: Varying Noise Level}
+\label{sec:exp2}
+
+\textbf{Setup:} $\sigma \in \{0.01, 0.02, 0.04, 0.06, 0.08, 0.10, 0.12,
+0.15\}$, $n = 25$, $\rho = 0.5$, $\gamma = 0$.
+
+\begin{figure}[H]
+    \centering
+    \includegraphics[width=\textwidth]{../exp2_vary_noise.png}
+    \caption{Experiment 2: Angular error (left) and execution time (right)
+             as noise increases.}
+    \label{fig:exp2}
+\end{figure}
+
+\textbf{Observations:}  All methods degrade with increasing noise, but the
+iterative and spectral approaches degrade more gracefully than the spanning tree.
+Sphere averaging maintains the lowest error throughout (from ${\sim}1^\circ$ at
+$\sigma{=}0.01$ to ${\sim}16^\circ$ at $\sigma{=}0.15$), while LSH/GSH degrade
+more rapidly and converge toward the tree baseline at high noise.  Execution
+times are largely independent of noise level.
+
+% ------- Experiment 3 -------
+\subsection{Experiment 3: Varying Hole Density}
+\label{sec:exp3}
+
+\textbf{Setup:} $\rho \in \{0.0, 0.1, 0.2, 0.3, 0.5, 0.7, 0.8, 0.9\}$,
+$n = 25$, $\sigma = 0.05$, $\gamma = 0$.
+
+\begin{figure}[H]
+    \centering
+    \includegraphics[width=\textwidth]{../exp3_vary_holes.png}
+    \caption{Experiment 3: Angular error (left) and execution time (right)
+             as the fraction of missing edges increases.}
+    \label{fig:exp3}
+\end{figure}
+
+\textbf{Observations:}  With denser graphs ($\rho \to 0$), all methods benefit
+from abundant redundancy.  As more edges are removed, less redundancy is
+available for error compensation and all methods converge toward spanning-tree
+performance.  Sphere maintains the best accuracy across the full range; the
+spectral methods (LSH/GSH) handle missing data natively and remain competitive
+until very high sparsity ($\rho > 0.7$).  Iterative execution time decreases
+with sparsity (fewer neighbours to average), while spectral time is roughly
+constant (dominated by the fixed $3n \times 3n$ SVD).
+
+% ------- Experiment 4 -------
+\subsection{Experiment 4: Varying Outlier Density}
+\label{sec:exp4}
+
+\textbf{Setup:} $\gamma \in \{0.0, 0.05, 0.1, 0.2, 0.3, 0.4, 0.5, 0.6\}$,
+$n = 25$, $\sigma = 0.05$, $\rho = 0.2$.
+
+\begin{figure}[H]
+    \centering
+    \includegraphics[width=\textwidth]{../exp4_vary_outliers.png}
+    \caption{Experiment 4: Plain methods (solid) vs.\ IRLS variants (dotted).
+             Left: angular error; right: execution time.}
+    \label{fig:exp4}
+\end{figure}
+
+\textbf{Observations:}  This experiment clearly demonstrates the value of IRLS
+robust reweighting.  All plain methods degrade rapidly beyond $\gamma{=}0.1$,
+reaching ${\sim}60$--$70^\circ$ error at $\gamma{=}0.6$---effectively random.
+In contrast, the \textbf{Sphere-IRLS} variant maintains ${\sim}5$--$8^\circ$
+error even at $\gamma{=}0.5$, only degrading significantly at $\gamma{=}0.6$.
+Euclidean-IRLS is the second-best robust method.  The spectral methods (LSH/GSH)
+are not inherently robust and deteriorate as rapidly as plain iterative methods.
+The IRLS cost is modest: Sphere-IRLS takes ${\sim}4$~s at $\gamma{=}0.6$
+compared to ${\sim}0.5$~s for plain Sphere.
+
+% ------- Experiment 5 -------
+\subsection{Experiment 5: Real Image Data}
+\label{sec:exp5}
+
+\textbf{Setup:} 10 images from a compressed dataset, evaluated by mean
+reprojection error (pixels).
+
+\begin{figure}[H]
+    \centering
+    \includegraphics[width=\textwidth]{../exp5_real_data.png}
+    \caption{Experiment 5: Reprojection error (left) and execution time
+             (right) on real images.}
+    \label{fig:exp5}
+\end{figure}
+
+\textbf{Observations:}  On real data, the \textbf{Tree} baseline achieves the
+lowest reprojection error (${\sim}2.2$~px), while the iterative and spectral
+methods cluster around $2.8$--$3.4$~px.  This counterintuitive result arises
+because the real dataset has a predominantly linear (sequential) capture
+geometry with low noise, where the spanning tree already provides an
+accurate solution; the iterative/spectral methods may introduce slight
+over-correction.  Sphere averaging is the slowest (${\sim}0.16$~s) while
+LSH and GSH are near-instantaneous.
+
+% ------- Topology Experiments -------
+\subsection{Experiment 6: Joint Noise $\times$ Topology Analysis}
+\label{sec:exp_topo}
+
+\textbf{Setup:}  $\sigma \in \{0.02, 0.04, 0.10, 0.15, 0.20, 0.25\}$, $n=25$,
+$\rho=0.3$, 20~trials, across six topologies: Linear (bw=1), Linear (bw=3),
+Circular (chord=3), Grid (8-connected), Multilane (3~lanes), Random (E-R).
+
+\begin{figure}[H]
+    \centering
+    \includegraphics[width=\textwidth]{../exp_noise_topology_grid.png}
+    \caption{Error vs.\ noise across six graph topologies.  Each subplot shows
+             all methods on one topology; lower is better.}
+    \label{fig:topo_grid}
+\end{figure}
+
+\begin{figure}[H]
+    \centering
+    \includegraphics[width=0.95\textwidth]{../exp_noise_topology_heatmap.png}
+    \caption{Winner heatmap: best method at each (topology, noise) cell.
+             Cell colour encodes best achievable error; text shows the
+             winning method abbreviation and error.}
+    \label{fig:topo_heatmap}
+\end{figure}
+
+\textbf{Observations from the grid plot (Figure~\ref{fig:topo_grid}):}
+\begin{itemize}[leftmargin=*]
+    \item \textbf{Linear (bw=1):}  All methods perform poorly due to minimal
+          redundancy (pure chain).  Tree and GSH are competitive at low noise;
+          all methods saturate near $60$--$65^\circ$ at high noise.
+
+    \item \textbf{Linear (bw=3):}  The wider bandwidth adds shortcut edges,
+          improving all methods.  Tree wins at low noise; Sphere and Direction
+          recover at moderate noise.
+
+    \item \textbf{Circular (chord=3):}  Loop closure helps all methods.  LSH
+          and Euclidean excel at low noise; Direction and Sphere perform well at
+          moderate noise.
+
+    \item \textbf{Grid (8-connected):}  Dense local redundancy benefits
+          spectral and iterative methods equally.  Euclidean excels at low
+          noise; Sphere at moderate noise.
+
+    \item \textbf{Multilane (3~lanes):}  Sphere dominates across all noise
+          levels, consistent with this topology being a realistic proxy for
+          multi-strip aerial survey.
+
+    \item \textbf{Random (E-R):}  With high average connectivity, Sphere
+          achieves the best performance overall, followed by Direction.
+\end{itemize}
+
+\textbf{Observations from the heatmap (Figure~\ref{fig:topo_heatmap}):}
+No single method dominates all conditions.  \textbf{Sphere} wins most cells on
+random, multilane, and grid topologies.  \textbf{Tree} is competitive on linear
+graphs, especially at moderate-to-high noise where iterative methods suffer from
+the lack of redundancy.  Spectral methods (GSH, LSH) win only on sparse
+topologies at low noise.  \textbf{Euclidean} is strong on grid and circular
+topologies at low noise.
+
+% ===========================================================================
+\section{Summary of Findings}
+\label{sec:summary}
+
+\begin{table}[H]
+\centering
+\caption{Comparative summary of synchronization methods.}
+\label{tab:summary}
+\small
+\begin{tabular}{@{}lp{5.5cm}p{5.5cm}@{}}
+\toprule
+\textbf{Family} & \textbf{Strengths} & \textbf{Weaknesses} \\
+\midrule
+\textbf{Iterative} (Sphere) &
+    Best accuracy overall; inherent L1 robustness; handles large graphs
+    efficiently ($O(n \cdot d)$ per iteration) &
+    Requires multiple iterations to converge; slowest per-node computation
+    due to fixed-point loop \\
+\addlinespace
+\textbf{Iterative} (Euclidean) &
+    Competitive accuracy; simpler than Sphere; strong on grid/circular
+    topologies &
+    L2 averaging; less robust than Sphere \\
+\addlinespace
+\textbf{Iterative} (Direction) &
+    Scale-invariant; good on dense graphs &
+    L2-based eigenvector; less robust to outliers \\
+\addlinespace
+\textbf{IRLS variants} &
+    Dramatic improvement under outliers ($\gamma \leq 0.5$); Cauchy
+    weighting suppresses gross errors without explicit detection &
+    $5\times$ overhead from repeated convergence cycles \\
+\addlinespace
+\textbf{Spectral} (LSH/GSH) &
+    Single SVD solve---no iterations; handles missing data natively;
+    fastest synchronization step &
+    $O((3n)^3)$ SVD cost; not inherently robust to outliers; less
+    accurate than iterative on dense graphs \\
+\addlinespace
+\textbf{Spanning Tree} &
+    Fastest method (single BFS, $O(n)$); works well on low-noise linear
+    data &
+    Accumulates errors from root to leaves; does not exploit redundant
+    measurements \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\noindent\textbf{Key takeaways:}
+\begin{enumerate}[leftmargin=*]
+    \item \textbf{Sphere averaging is the best general-purpose method}, with the
+          lowest error on random and multilane topologies across all noise levels.
+    \item \textbf{IRLS is essential for outlier-contaminated data}: Sphere-IRLS
+          maintains $<10^\circ$ error even with 50\% outlier edges.
+    \item \textbf{Topology matters}: linear chains with low bandwidth severely
+          limit all methods due to minimal redundancy; adding loop closure
+          (circular) or cross-connections (multilane, grid) dramatically improves
+          performance.
+    \item \textbf{Spectral methods are efficient but fragile}: LSH/GSH excel on
+          clean, moderately sparse graphs but degrade rapidly with noise or
+          outliers.
+    \item \textbf{The spanning tree can be surprisingly competitive} on
+          sequential (linear) real-world datasets with low noise.
+\end{enumerate}
+
+% ===========================================================================
+
+\begin{thebibliography}{9}
+
+\bibitem{madhavan2024}
+R.~Madhavan, A.~Fusiello, and F.~Arrigoni,
+``Synchronization of Projective Transformations,''
+2024.
+
+\bibitem{schroeder2011}
+P.~Schroeder, A.~Bartoli, P.~Georgel, and N.~Navab,
+``Closed-Form Solutions to Multiple-View Homography Estimation,''
+in \emph{Proc.\ IEEE Workshop on Applications of Computer Vision (WACV)}, 2011.
+
+\end{thebibliography}
+
+\end{document}
