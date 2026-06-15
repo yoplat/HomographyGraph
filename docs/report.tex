@@ -553,9 +553,35 @@ topologies at low noise.
 % ------- IRLS Norm Experiment -------
 \subsection{Attempted Experiment 1: IRLS Norm variation}
 \label{sec:exp_IRLS_Norm}
+As an attempt to improve the Sphere method,  we implemented the \textbf{L1 norm} (using Weiszfeld's algorithm within the IRLS framework) to improve the robustness of the iterative synchronization method. Unfortunately, the experimental results did not yield the expected improvements in accuracy compared to the baseline Cauchy loss. 
+\begin{figure}[H]
+    \centering
+    \includegraphics[width=\textwidth]{results/benchmark L_1/l1_exp2_noise.png}
+    
+    \vspace{0.5cm} % Piccolo spazio tra le due immagini
+    
+    \includegraphics[width=\textwidth]{results/benchmark L_1/l1_exp1_outliers.png}
+    
+    \caption{Top: Performance at varying noise levels. Bottom: Performance at varying outlier densities.}
+    \label{fig:benchmark_l1}
+\end{figure}
 
+Comparing the iterative method with Cauchy loss versus the L1 norm, we observed two main trends:
+\begin{itemize}
+    \item \textbf{Accuracy:} At typical noise levels ($\sigma = 0.05$), the L1 norm produces a significantly higher angular error than Cauchy ($\sim 8^\circ$ vs. $\sim 5^\circ$).
+    \item \textbf{Speed:} The L1 norm converges systematically faster, keeping execution times consistently lower.
+\end{itemize}
+
+\textbf{Why it failed.}
+The higher error of the L1 norm is due to its \textbf{statistical efficiency} regarding the underlying noise model. 
+In our framework, measurement noise is modeled as \textbf{Gaussian}. According to the Gauss-Markov theorem, the optimal estimator for Gaussian noise is the \textbf{L2 Norm}.
+\begin{itemize}
+    \item \textbf{Cauchy Loss:} For inliers with small residuals ($r \ll c$), the Cauchy IRLS weights $w = 1 / (1 + (r / c)^2)$ approach 1. Consequently, Cauchy asymptotically \textit{behaves like L2} for the inliers, achieving optimal efficiency against Gaussian noise.
+    \item \textbf{L1 Norm:} The L1 IRLS weights diverge near zero ($w = 1/|r|$), forcing the solution towards the \textit{geometric median}. While excellent at rejecting gross outliers, the median is a sub-optimal estimator (with higher variance) for Gaussian distributions, resulting in a higher residual error when dealing with noisy inliers.
+\end{itemize}
+Despite being less accurate, L1 is computationally faster. This is because its diverging weights ($1/|r|$) act as an aggressive \textit{hard-attention} mechanism. The algorithm rapidly locks onto a subset of edges, driving their residuals to zero and quickly freezing the graph's geometry. Cauchy, on the other hand, seeks a "soft" and continuous equilibrium among all inliers, naturally requiring more iterations (sweeps) to fully converge.
 % ------- Lie Branch -------
-\subsection{Attempted Experiment: Lie-Algebraic (Riemannian) Synchronization}
+\subsection{Attempted Experiment 2: Lie-Algebraic (Riemannian) Synchronization}
 \label{sec:exp_lie}
 
 As part of the project, a Riemannian synchronization method on $\mathrm{SL}(3)$
