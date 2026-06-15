@@ -326,7 +326,7 @@ $\rho = 0.5$ (hole density), $\gamma = 0$ (no outliers).
 
 \begin{figure}[H]
     \centering
-    \includegraphics[width=\textwidth]{../exp1_vary_nodes.png}
+    \includegraphics[width=\textwidth]{results/benchmark/exp1_vary_nodes.png}
     \caption{Experiment 1: Angular error (left) and execution time (right)
              as a function of graph size.}
     \label{fig:exp1}
@@ -350,7 +350,7 @@ due to its per-node fixed-point iteration; the tree baseline is near-instant.
 
 \begin{figure}[H]
     \centering
-    \includegraphics[width=\textwidth]{../exp2_vary_noise.png}
+    \includegraphics[width=\textwidth]{results/benchmark/exp2_vary_noise.png}
     \caption{Experiment 2: Angular error (left) and execution time (right)
              as noise increases.}
     \label{fig:exp2}
@@ -358,10 +358,18 @@ due to its per-node fixed-point iteration; the tree baseline is near-instant.
 
 \textbf{Observations:}  All methods degrade with increasing noise, but the
 iterative and spectral approaches degrade more gracefully than the spanning tree.
-Sphere averaging maintains the lowest error throughout (from ${\sim}1^\circ$ at
-$\sigma{=}0.01$ to ${\sim}16^\circ$ at $\sigma{=}0.15$), while LSH/GSH degrade
-more rapidly and converge toward the tree baseline at high noise.  Execution
-times are largely independent of noise level.
+This is because iterative and spectral methods exploit all available edges to
+average out independent noise contributions, whereas the spanning tree propagates
+each noisy measurement directly along the path from root to leaf with no
+cross-checking.  Sphere averaging maintains the lowest error throughout (from
+${\sim}1^\circ$ at $\sigma{=}0.01$ to ${\sim}16^\circ$ at $\sigma{=}0.15$).
+LSH/GSH degrade more rapidly at high noise and converge toward the tree
+baseline: the spectral block-matrix solve is a global weighted least-squares
+fit that gives equal weight to every measurement, so large noise corrupts the
+system uniformly and the SVD solution loses accuracy without any robust
+averaging to compensate.  Execution times are largely independent of noise
+because convergence speed is governed by graph structure (number of neighbours,
+degree distribution), not by the magnitude of the perturbations.
 
 % ------- Experiment 3 -------
 \subsection{Experiment 3: Varying Hole Density}
@@ -372,7 +380,7 @@ $n = 25$, $\sigma = 0.05$, $\gamma = 0$.
 
 \begin{figure}[H]
     \centering
-    \includegraphics[width=\textwidth]{../exp3_vary_holes.png}
+    \includegraphics[width=\textwidth]{results/benchmark/exp3_vary_holes.png}
     \caption{Experiment 3: Angular error (left) and execution time (right)
              as the fraction of missing edges increases.}
     \label{fig:exp3}
@@ -381,11 +389,19 @@ $n = 25$, $\sigma = 0.05$, $\gamma = 0$.
 \textbf{Observations:}  With denser graphs ($\rho \to 0$), all methods benefit
 from abundant redundancy.  As more edges are removed, less redundancy is
 available for error compensation and all methods converge toward spanning-tree
-performance.  Sphere maintains the best accuracy across the full range; the
-spectral methods (LSH/GSH) handle missing data natively and remain competitive
-until very high sparsity ($\rho > 0.7$).  Iterative execution time decreases
-with sparsity (fewer neighbours to average), while spectral time is roughly
-constant (dominated by the fixed $3n \times 3n$ SVD).
+performance; in the extreme limit (minimum spanning tree), every method
+necessarily reduces to a single chain of chained measurements with no
+cross-checking.  Sphere maintains the best accuracy across the full range
+because the L1 geodesic mean down-weights the influence of any single noisy
+measurement, so even a sparse set of neighbours is exploited efficiently.
+The spectral methods (LSH/GSH) handle missing data natively and remain
+competitive until very high sparsity ($\rho > 0.7$): absent edges simply
+contribute zero blocks to the block matrix, leaving the SVD problem
+well-posed without requiring any special treatment.  Iterative execution time
+decreases with sparsity (fewer neighbours to average), while spectral time is
+roughly constant (dominated by the fixed $3n \times 3n$ SVD regardless of
+how many blocks are zero).
+
 
 % ------- Experiment 4 -------
 \subsection{Experiment 4: Varying Outlier Density}
@@ -396,7 +412,7 @@ $n = 25$, $\sigma = 0.05$, $\rho = 0.2$.
 
 \begin{figure}[H]
     \centering
-    \includegraphics[width=\textwidth]{../exp4_vary_outliers.png}
+    \includegraphics[width=\textwidth]{results/benchmark/exp4_vary_outliers.png}
     \caption{Experiment 4: Plain methods (solid) vs.\ IRLS variants (dotted).
              Left: angular error; right: execution time.}
     \label{fig:exp4}
@@ -405,12 +421,23 @@ $n = 25$, $\sigma = 0.05$, $\rho = 0.2$.
 \textbf{Observations:}  This experiment clearly demonstrates the value of IRLS
 robust reweighting.  All plain methods degrade rapidly beyond $\gamma{=}0.1$,
 reaching ${\sim}60$--$70^\circ$ error at $\gamma{=}0.6$---effectively random.
-In contrast, the \textbf{Sphere-IRLS} variant maintains ${\sim}5$--$8^\circ$
-error even at $\gamma{=}0.5$, only degrading significantly at $\gamma{=}0.6$.
-Euclidean-IRLS is the second-best robust method.  The spectral methods (LSH/GSH)
-are not inherently robust and deteriorate as rapidly as plain iterative methods.
-The IRLS cost is modest: Sphere-IRLS takes ${\sim}4$~s at $\gamma{=}0.6$
-compared to ${\sim}0.5$~s for plain Sphere.
+This collapse occurs because plain averaging weights every neighbor equally:
+even a small fraction of outlier edges (random homographies) pulls the mean
+far from the true estimate, and without downweighting these corrupt
+measurements the iteration converges to a wrong fixed point.  In contrast,
+the \textbf{Sphere-IRLS} variant maintains ${\sim}5$--$8^\circ$ error even
+at $\gamma{=}0.5$, only degrading significantly at $\gamma{=}0.6$: Cauchy
+reweighting progressively suppresses edges whose residuals are large (i.e.,
+inconsistent with the current estimate), allowing the method to identify and
+ignore outliers implicitly.  Euclidean-IRLS is the second-best robust method,
+slightly behind Sphere-IRLS because the L2 mean is more sensitive to residual
+outlier pull than the L1 sphere mean.  The spectral methods (LSH/GSH) are not
+inherently robust and deteriorate as rapidly as plain iterative methods because
+the SVD null-space extraction is a global least-squares problem that cannot
+localize or down-weight individual corrupt edges.  The IRLS cost is modest:
+Sphere-IRLS takes ${\sim}4$~s at $\gamma{=}0.6$ compared to ${\sim}0.5$~s
+for plain Sphere.
+
 
 % ------- Experiment 5 -------
 \subsection{Experiment 5: Real Image Data}
@@ -421,7 +448,7 @@ reprojection error (pixels).
 
 \begin{figure}[H]
     \centering
-    \includegraphics[width=\textwidth]{../exp5_real_data.png}
+    \includegraphics[width=\textwidth]{results/benchmark/exp5_real_data.png}
     \caption{Experiment 5: Reprojection error (left) and execution time
              (right) on real images.}
     \label{fig:exp5}
@@ -429,12 +456,19 @@ reprojection error (pixels).
 
 \textbf{Observations:}  On real data, the \textbf{Tree} baseline achieves the
 lowest reprojection error (${\sim}2.2$~px), while the iterative and spectral
-methods cluster around $2.8$--$3.4$~px.  This counterintuitive result arises
-because the real dataset has a predominantly linear (sequential) capture
-geometry with low noise, where the spanning tree already provides an
-accurate solution; the iterative/spectral methods may introduce slight
-over-correction.  Sphere averaging is the slowest (${\sim}0.16$~s) while
-LSH and GSH are near-instantaneous.
+methods cluster around $2.8$--$3.4$~px.  This counterintuitive result has a
+clear cause: the real dataset consists of sequentially captured images with
+predominantly linear overlap, and the pairwise homographies estimated by
+SIFT+RANSAC are already clean (no gross outliers, low reprojection error per
+pair).  In this setting the spanning tree is the globally optimal solution
+because the graph has minimal cycle redundancy and no corrupt edges to
+average out.  The iterative and spectral methods are designed to exploit
+cycle redundancy to correct errors; when that redundancy is absent and the
+measurements are clean, they instead accumulate the effect of small
+inter-frame inconsistencies over multiple rounds of global optimization,
+producing a slightly worse result than the simple chain.  Sphere averaging
+is the slowest (${\sim}0.16$~s) while LSH and GSH are near-instantaneous.
+
 
 % ------- Topology Experiments -------
 \subsection{Experiment 6: Joint Noise $\times$ Topology Analysis}
@@ -446,7 +480,7 @@ Circular (chord=3), Grid (8-connected), Multilane (3~lanes), Random (E-R).
 
 \begin{figure}[H]
     \centering
-    \includegraphics[width=\textwidth]{../exp_noise_topology_grid.png}
+    \includegraphics[width=\textwidth]{results/benchmark_noise_topology/exp_noise_topology_grid.png}
     \caption{Error vs.\ noise across six graph topologies.  Each subplot shows
              all methods on one topology; lower is better.}
     \label{fig:topo_grid}
@@ -454,7 +488,7 @@ Circular (chord=3), Grid (8-connected), Multilane (3~lanes), Random (E-R).
 
 \begin{figure}[H]
     \centering
-    \includegraphics[width=0.95\textwidth]{../exp_noise_topology_heatmap.png}
+    \includegraphics[width=0.95\textwidth]{results/benchmark_noise_topology/exp_noise_topology_heatmap.png}
     \caption{Winner heatmap: best method at each (topology, noise) cell.
              Cell colour encodes best achievable error; text shows the
              winning method abbreviation and error.}
@@ -463,29 +497,51 @@ Circular (chord=3), Grid (8-connected), Multilane (3~lanes), Random (E-R).
 
 \textbf{Observations from the grid plot (Figure~\ref{fig:topo_grid}):}
 \begin{itemize}[leftmargin=*]
-    \item \textbf{Linear (bw=1):}  All methods perform poorly due to minimal
-          redundancy (pure chain).  Tree and GSH are competitive at low noise;
-          all methods saturate near $60$--$65^\circ$ at high noise.
+    \item \textbf{Linear (bw=1):}  All methods perform poorly because the
+          pure chain provides no cycle redundancy---there is no alternative
+          path between any two nodes, so no cross-checking of measurements
+          is possible and errors accumulate exactly as in the spanning tree.
+          Tree and GSH are competitive at low noise; all methods saturate near
+          $60$--$65^\circ$ at high noise.
 
-    \item \textbf{Linear (bw=3):}  The wider bandwidth adds shortcut edges,
-          improving all methods.  Tree wins at low noise; Sphere and Direction
-          recover at moderate noise.
+    \item \textbf{Linear (bw=3):}  The wider bandwidth adds shortcut edges
+          that create short cycles, enabling limited cross-checking and
+          improving all methods.  Tree still wins at low noise because the
+          extra edges offer little benefit when individual measurements are
+          already accurate; at moderate noise Sphere and Direction recover as
+          they can now average over genuinely redundant information.
 
-    \item \textbf{Circular (chord=3):}  Loop closure helps all methods.  LSH
-          and Euclidean excel at low noise; Direction and Sphere perform well at
-          moderate noise.
+    \item \textbf{Circular (chord=3):}  Loop closure introduces non-trivial
+          cycles that provide global consistency constraints (any closed-loop
+          product of relative homographies must equal identity), giving all
+          methods additional signal to correct drift.  LSH and Euclidean
+          excel at low noise because the linear system is already
+          well-conditioned; Direction and Sphere perform better at moderate
+          noise where robustness to individual measurements matters more.
 
-    \item \textbf{Grid (8-connected):}  Dense local redundancy benefits
-          spectral and iterative methods equally.  Euclidean excels at low
-          noise; Sphere at moderate noise.
+    \item \textbf{Grid (8-connected):}  Dense local redundancy (every node
+          has up to 8 neighbours) benefits both spectral and iterative methods
+          equally, since each node receives many independent constraint
+          equations from different directions.  Euclidean excels at low noise
+          (many measurements with small error → accurate L2 mean); Sphere at
+          moderate noise (L1 geodesic mean down-weights the noisier
+          neighbours).
 
     \item \textbf{Multilane (3~lanes):}  Sphere dominates across all noise
-          levels, consistent with this topology being a realistic proxy for
-          multi-strip aerial survey.
+          levels because the multilane structure provides high local
+          connectivity \emph{and} long-range cross-lane edges, creating rich
+          cycle structure.  This is exactly the regime where the L1 geodesic
+          mean is most effective: many redundant neighbours with varying
+          quality, where robustly down-weighting the worst ones yields a large
+          accuracy gain over the L2 mean.
 
-    \item \textbf{Random (E-R):}  With high average connectivity, Sphere
-          achieves the best performance overall, followed by Direction.
+    \item \textbf{Random (E-R):}  With high and uniform average connectivity,
+          every node has many neighbours from which to form an accurate
+          estimate.  Sphere achieves the best performance overall because the
+          random degree distribution means some neighbours are more reliable
+          than others, and the L1 mean naturally suppresses their influence.
 \end{itemize}
+
 
 \textbf{Observations from the heatmap (Figure~\ref{fig:topo_heatmap}):}
 No single method dominates all conditions.  \textbf{Sphere} wins most cells on
@@ -494,6 +550,62 @@ graphs, especially at moderate-to-high noise where iterative methods suffer from
 the lack of redundancy.  Spectral methods (GSH, LSH) win only on sparse
 topologies at low noise.  \textbf{Euclidean} is strong on grid and circular
 topologies at low noise.
+% ------- IRLS Norm Experiment -------
+\subsection{Attempted Experiment 1: IRLS Norm variation}
+\label{sec:exp_IRLS_Norm}
+
+% ------- Lie Branch -------
+\subsection{Attempted Experiment: Lie-Algebraic (Riemannian) Synchronization}
+\label{sec:exp_lie}
+
+As part of the project, a Riemannian synchronization method on $\mathrm{SL}(3)$
+was implemented in a separate \texttt{lie} branch alongside the corresponding
+benchmark script \texttt{benchmark\_sphere\_vs\_lie.py}.  The idea is to replace
+the extrinsic sphere-based averaging---which treats each homography as a
+9-dimensional unit vector in $\mathbb{R}^9$---with an \emph{intrinsic} update
+that respects the curved geometry of the Lie group:
+\begin{equation}
+    X_i^{\text{new}} = X_i \cdot \exp\!\Bigl(
+        \tfrac{1}{\sum_j w_j} \sum_{j \in \mathcal{N}(i)}
+        w_j \, \log\!\bigl(X_i^{-1} Z_{ij} X_j\bigr)
+    \Bigr),
+\end{equation}
+where $\log(\cdot)$ and $\exp(\cdot)$ denote the matrix logarithm and exponential
+on $\mathrm{SL}(3)$, and $\mathfrak{sl}(3)$ (the space of $3\times3$ traceless
+matrices) serves as the Lie algebra in which the averaging is performed.
+
+\textbf{Why it failed.}
+The fundamental obstacle is the matrix logarithm.  \texttt{scipy.linalg.logm}
+computes the \emph{principal} matrix logarithm via Schur decomposition, which is
+only real-valued for matrices whose eigenvalues have no negative real part.
+Generic $\mathrm{SL}(3)$ matrices---such as the randomly generated ground-truth
+homographies used in the benchmarks---frequently have negative real eigenvalues,
+causing \texttt{logm} to return complex values and making the Lie-algebra update
+undefined.  A more robust fallback (\texttt{\_sl3\_log\_robust}) was developed,
+which iteratively takes matrix square roots to bring the input into a small
+neighborhood of the identity before applying \texttt{logm} (following the
+$H \approx (H^{1/2^k})^{2^k}$ identity).  However, this approach also fails
+when any intermediate square root lands on a matrix with negative real eigenvalues,
+since real square roots do not exist in that case.  In practice, a significant
+fraction of neighbor estimates $X_i^{-1} Z_{ij} X_j$ fell outside the domain of
+the real logarithm, forcing those neighbors to be skipped and degrading the update
+quality.  Combined with the $3$--$5\times$ per-sweep computational overhead of
+\texttt{logm} and \texttt{expm} relative to the sphere fixed-point iteration, the
+Lie method did not achieve better accuracy than Sphere averaging and was therefore
+excluded from the main experiments.
+
+% ===========================================================================
+\section{Real-Life Results}
+\label{sec:real_life}
+
+The mosaic of a building in Piacenza constructed using the Sphere averaging method is shown below.
+
+\begin{figure}[H]
+    \centering
+    \includegraphics[width=0.8\textwidth]{results/real_life_results/real_life_homography.png}
+    \caption{Mosaic of a building in Piacenza, constructed using the Sphere averaging method.}
+    \label{fig:real_life_mosaic}
+\end{figure}
 
 % ===========================================================================
 \section{Summary of Findings}
@@ -539,6 +651,12 @@ topologies at low noise.
     data &
     Accumulates errors from root to leaves; does not exploit redundant
     measurements \\
+\addlinespace
+\textbf{Lie-algebraic} (Riemannian) &
+    Intrinsic updates respect the curved geometry of $\mathrm{SL}(3)$;
+    theoretically faster convergence for large homographies &
+    Principal matrix logarithm (\texttt{logm}) is undefined over the reals
+    for matrices with negative eigenvalues, which are common in $\mathrm{SL}(3)$; \\
 \bottomrule
 \end{tabular}
 \end{table}
@@ -558,6 +676,11 @@ topologies at low noise.
           outliers.
     \item \textbf{The spanning tree can be surprisingly competitive} on
           sequential (linear) real-world datasets with low noise.
+    \item \textbf{Intrinsic Lie-algebraic averaging is impractical for general
+          $\mathrm{SL}(3)$}: the principal matrix logarithm fails on matrices
+          with negative real eigenvalues, which occur frequently in this group,
+          making the method unreliable without a more sophisticated (and
+          expensive) geodesic computation.
 \end{enumerate}
 
 % ===========================================================================
